@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+chromadb
+ollama
+redis
+python-multipart
+pypdf
+httpx
+pytest
+rank-bm25
+sentence-transformers

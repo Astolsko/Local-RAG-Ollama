@@ -1,0 +1,39 @@
+# Data and local DB storage
+data/
+backend/document/
+
+# Logs
+*.log
+backend.log
+backend_err.log
+frontend.log
+frontend_err.log
+
+# Python cache & environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+ENV/
+env/
+.cache/
+
+# Node/React dependencies and builds
+node_modules/
+dist/
+dist-ssr/
+.vite/
+.eslintcache/
+
+# Local configuration files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# OS files
+.DS_Store
+Thumbs.db
