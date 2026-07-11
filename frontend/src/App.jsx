@@ -201,6 +201,7 @@ function App() {
   const [ollamaModels, setOllamaModels] = useState([])
   const [systemPromptText, setSystemPromptText] = useState('')
   const [settingsTab, setSettingsTab] = useState('general') // 'general', 'rag', 'prompt'
+  const [loadingSettings, setLoadingSettings] = useState(false)
 
   // Source Preview Modal states
   const [showSourcePreviewModal, setShowSourcePreviewModal] = useState(false)
@@ -498,6 +499,8 @@ function App() {
 
   const handleOpenSettings = async () => {
     setError('')
+    setShowSettingsModal(true)
+    setLoadingSettings(true)
     try {
       const [currSettings, models, prompt] = await Promise.all([
         getSettings(),
@@ -508,9 +511,10 @@ function App() {
       setOllamaModels(models.models || [])
       setSystemPromptText(prompt.text || '')
       setSettingsTab('general')
-      setShowSettingsModal(true)
     } catch (err) {
       setError('Failed to load settings: ' + err.message)
+    } finally {
+      setLoadingSettings(false)
     }
   }
 
@@ -986,171 +990,180 @@ function App() {
 
       {/* Settings Modal Overlay */}
       {showSettingsModal && (
-        <div className="modal-overlay" onClick={() => setShowSettingsModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay">
+          <div className="modal-content">
             <div className="modal-header">
               <h3>Settings</h3>
               <button type="button" className="close-btn" onClick={() => setShowSettingsModal(false)}>×</button>
             </div>
             
-            <div className="modal-tabs">
-              <button 
-                type="button" 
-                className={`tab-btn ${settingsTab === 'general' ? 'active' : ''}`}
-                onClick={() => setSettingsTab('general')}
-              >
-                General Settings
-              </button>
-              <button 
-                type="button" 
-                className={`tab-btn ${settingsTab === 'rag' ? 'active' : ''}`}
-                onClick={() => setSettingsTab('rag')}
-              >
-                RAG Parameters
-              </button>
-              <button 
-                type="button" 
-                className={`tab-btn ${settingsTab === 'prompt' ? 'active' : ''}`}
-                onClick={() => setSettingsTab('prompt')}
-              >
-                System Prompt
-              </button>
-            </div>
+            {loadingSettings ? (
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4rem 2rem' }}>
+                <div className="spinner" style={{ border: '3px solid rgba(139, 117, 91, 0.1)', width: '32px', height: '32px', borderRadius: '50%', borderLeftColor: '#8b755b', animation: 'spin 1s linear infinite', marginBottom: '1rem' }}></div>
+                <div style={{ color: '#6e6151', fontSize: '0.85rem', fontWeight: '600' }}>Loading RAG configuration...</div>
+              </div>
+            ) : (
+              <>
+                <div className="modal-tabs">
+                  <button 
+                    type="button" 
+                    className={`tab-btn ${settingsTab === 'general' ? 'active' : ''}`}
+                    onClick={() => setSettingsTab('general')}
+                  >
+                    General Settings
+                  </button>
+                  <button 
+                    type="button" 
+                    className={`tab-btn ${settingsTab === 'rag' ? 'active' : ''}`}
+                    onClick={() => setSettingsTab('rag')}
+                  >
+                    RAG Parameters
+                  </button>
+                  <button 
+                    type="button" 
+                    className={`tab-btn ${settingsTab === 'prompt' ? 'active' : ''}`}
+                    onClick={() => setSettingsTab('prompt')}
+                  >
+                    System Prompt
+                  </button>
+                </div>
 
-            <form onSubmit={handleSaveSettings}>
-              <div className="modal-body">
-                {settingsTab === 'general' && (
-                  <>
-                    <div className="form-group">
-                      <label>Ollama Base URL</label>
-                      <input 
-                        type="text" 
-                        value={settingsData.OLLAMA_BASE || ''} 
-                        onChange={(e) => setSettingsData({ ...settingsData, OLLAMA_BASE: e.target.value })} 
-                        disabled={busy}
-                        required
-                      />
-                    </div>
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>LLM Model</label>
-                        <select 
-                          value={settingsData.LLM_MODEL || ''} 
-                          onChange={(e) => setSettingsData({ ...settingsData, LLM_MODEL: e.target.value })} 
-                          disabled={busy}
-                        >
-                          {ollamaModels.map((m) => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
-                          {!ollamaModels.includes(settingsData.LLM_MODEL) && settingsData.LLM_MODEL && (
-                            <option value={settingsData.LLM_MODEL}>{settingsData.LLM_MODEL}</option>
-                          )}
-                        </select>
-                      </div>
-                      <div className="form-group">
-                        <label>Embedding Model</label>
-                        <select 
-                          value={settingsData.EMBED_MODEL || ''} 
-                          onChange={(e) => setSettingsData({ ...settingsData, EMBED_MODEL: e.target.value })} 
-                          disabled={busy}
-                        >
-                          {ollamaModels.map((m) => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
-                          {!ollamaModels.includes(settingsData.EMBED_MODEL) && settingsData.EMBED_MODEL && (
-                            <option value={settingsData.EMBED_MODEL}>{settingsData.EMBED_MODEL}</option>
-                          )}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="form-group">
-                      <label>Redis Connection URL</label>
-                      <input 
-                        type="text" 
-                        value={settingsData.REDIS_URL || ''} 
-                        onChange={(e) => setSettingsData({ ...settingsData, REDIS_URL: e.target.value })} 
-                        disabled={busy}
-                        required
-                      />
-                    </div>
-                  </>
-                )}
+                <form onSubmit={handleSaveSettings}>
+                  <div className="modal-body">
+                    {settingsTab === 'general' && (
+                      <>
+                        <div className="form-group">
+                          <label>Ollama Base URL</label>
+                          <input 
+                            type="text" 
+                            value={settingsData.OLLAMA_BASE || ''} 
+                            onChange={(e) => setSettingsData({ ...settingsData, OLLAMA_BASE: e.target.value })} 
+                            disabled={busy}
+                            required
+                          />
+                        </div>
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label>LLM Model</label>
+                            <select 
+                              value={settingsData.LLM_MODEL || ''} 
+                              onChange={(e) => setSettingsData({ ...settingsData, LLM_MODEL: e.target.value })} 
+                              disabled={busy}
+                            >
+                              {ollamaModels.map((m) => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                              {!ollamaModels.includes(settingsData.LLM_MODEL) && settingsData.LLM_MODEL && (
+                                <option value={settingsData.LLM_MODEL}>{settingsData.LLM_MODEL}</option>
+                              )}
+                            </select>
+                          </div>
+                          <div className="form-group">
+                            <label>Embedding Model</label>
+                            <select 
+                              value={settingsData.EMBED_MODEL || ''} 
+                              onChange={(e) => setSettingsData({ ...settingsData, EMBED_MODEL: e.target.value })} 
+                              disabled={busy}
+                            >
+                              {ollamaModels.map((m) => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                              {!ollamaModels.includes(settingsData.EMBED_MODEL) && settingsData.EMBED_MODEL && (
+                                <option value={settingsData.EMBED_MODEL}>{settingsData.EMBED_MODEL}</option>
+                              )}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="form-group">
+                          <label>Redis Connection URL</label>
+                          <input 
+                            type="text" 
+                            value={settingsData.REDIS_URL || ''} 
+                            onChange={(e) => setSettingsData({ ...settingsData, REDIS_URL: e.target.value })} 
+                            disabled={busy}
+                            required
+                          />
+                        </div>
+                      </>
+                    )}
 
-                {settingsTab === 'rag' && (
-                  <>
-                    <div className="form-row">
+                    {settingsTab === 'rag' && (
+                      <>
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label>Chunk Size (characters)</label>
+                            <input 
+                              type="number" 
+                              min="10"
+                              max="10000"
+                              value={settingsData.CHUNK_SIZE || 500} 
+                              onChange={(e) => setSettingsData({ ...settingsData, CHUNK_SIZE: parseInt(e.target.value) || 0 })} 
+                              disabled={busy}
+                              required
+                            />
+                          </div>
+                          <div className="form-group">
+                            <label>Chunk Overlap (characters)</label>
+                            <input 
+                              type="number" 
+                              min="0"
+                              max="5000"
+                              value={settingsData.CHUNK_OVERLAP || 50} 
+                              onChange={(e) => setSettingsData({ ...settingsData, CHUNK_OVERLAP: parseInt(e.target.value) || 0 })} 
+                              disabled={busy}
+                              required
+                            />
+                          </div>
+                        </div>
+                        <div className="form-group">
+                          <label>Top K Chunks Retrieved</label>
+                          <input 
+                            type="number" 
+                            min="1"
+                            max="50"
+                            value={settingsData.TOP_K || 4} 
+                            onChange={(e) => setSettingsData({ ...settingsData, TOP_K: parseInt(e.target.value) || 0 })} 
+                            disabled={busy}
+                            required
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {settingsTab === 'prompt' && (
                       <div className="form-group">
-                        <label>Chunk Size (characters)</label>
-                        <input 
-                          type="number" 
-                          min="10"
-                          max="10000"
-                          value={settingsData.CHUNK_SIZE || 500} 
-                          onChange={(e) => setSettingsData({ ...settingsData, CHUNK_SIZE: parseInt(e.target.value) || 0 })} 
+                        <label>Editable System Prompt</label>
+                        <textarea 
+                          rows={10}
+                          value={systemPromptText} 
+                          onChange={(e) => setSystemPromptText(e.target.value)} 
                           disabled={busy}
+                          placeholder="Enter prompt guidelines..."
                           required
                         />
                       </div>
-                      <div className="form-group">
-                        <label>Chunk Overlap (characters)</label>
-                        <input 
-                          type="number" 
-                          min="0"
-                          max="5000"
-                          value={settingsData.CHUNK_OVERLAP || 50} 
-                          onChange={(e) => setSettingsData({ ...settingsData, CHUNK_OVERLAP: parseInt(e.target.value) || 0 })} 
-                          disabled={busy}
-                          required
-                        />
-                      </div>
-                    </div>
-                    <div className="form-group">
-                      <label>Top K Chunks Retrieved</label>
-                      <input 
-                        type="number" 
-                        min="1"
-                        max="50"
-                        value={settingsData.TOP_K || 4} 
-                        onChange={(e) => setSettingsData({ ...settingsData, TOP_K: parseInt(e.target.value) || 0 })} 
-                        disabled={busy}
-                        required
-                      />
-                    </div>
-                  </>
-                )}
-
-                {settingsTab === 'prompt' && (
-                  <div className="form-group">
-                    <label>Editable System Prompt</label>
-                    <textarea 
-                      rows={10}
-                      value={systemPromptText} 
-                      onChange={(e) => setSystemPromptText(e.target.value)} 
-                      disabled={busy}
-                      placeholder="Enter prompt guidelines..."
-                      required
-                    />
+                    )}
                   </div>
-                )}
-              </div>
-              
-              <div className="modal-footer">
-                <button 
-                  type="button" 
-                  className="ghost" 
-                  onClick={() => setShowSettingsModal(false)}
-                  disabled={busy}
-                >
-                  Cancel
-                </button>
-                <button 
-                  type="submit" 
-                  disabled={busy}
-                >
-                  Save Settings
-                </button>
-              </div>
-            </form>
+                  
+                  <div className="modal-footer">
+                    <button 
+                      type="button" 
+                      className="ghost" 
+                      onClick={() => setShowSettingsModal(false)}
+                      disabled={busy}
+                    >
+                      Cancel
+                    </button>
+                    <button 
+                      type="submit" 
+                      disabled={busy}
+                    >
+                      Save Settings
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         </div>
       )}

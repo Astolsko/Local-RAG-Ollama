@@ -44,54 +44,15 @@ _collection = _client.get_or_create_collection(
 )
 
 def smart_chunk_page(page_content: str) -> list[str]:
-    # ponytail: splits by paragraphs to respect semantic boundaries, falls back to char slice
-    paragraphs = page_content.split("\n\n")
-    chunks = []
-    current_chunk = []
-    current_len = 0
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-        if current_len + len(para) > config.CHUNK_SIZE:
-            if current_chunk:
-                chunks.append("\n\n".join(current_chunk))
-                current_chunk = []
-                current_len = 0
-            if len(para) > config.CHUNK_SIZE:
-                # split large paragraph
-                start = 0
-                while start < len(para):
-                    end = min(start + config.CHUNK_SIZE, len(para))
-                    piece = para[start:end].strip()
-                    if piece:
-                        chunks.append(piece)
-                    if end >= len(para):
-                        break
-                    start = end - config.CHUNK_OVERLAP
-                continue
-        current_chunk.append(para)
-        current_len += len(para)
-    if current_chunk:
-        chunks.append("\n\n".join(current_chunk))
-    return chunks
+    # ponytail: calls semantic_chunk_text to split page content semantically
+    from backend.ingestion.chunker import semantic_chunk_text
+    return semantic_chunk_text(page_content, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
 
 
 def chunk_text(text: str) -> list[str]:
-    text = text.strip()
-    if not text:
-        return []
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        end = min(start + config.CHUNK_SIZE, len(text))
-        piece = text[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        if end >= len(text):
-            break
-        start = end - config.CHUNK_OVERLAP
-    return chunks
+    # ponytail: calls semantic_chunk_text to split text semantically
+    from backend.ingestion.chunker import semantic_chunk_text
+    return semantic_chunk_text(text, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
 
 
 def split_into_pages(text: str) -> list[str]:
@@ -161,6 +122,39 @@ def chunk_text_with_metadata(text: str, source_name: str) -> list[dict[str, Any]
 
 def add_source(name: str, text: str) -> dict[str, Any]:
     start_time = time.time()
+    
+    import hashlib
+    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    
+    # Check if a source with this name already exists in Chroma
+    existing = _collection.get(where={"source_name": name}, include=["metadatas"])
+    if existing and existing.get("ids"):
+        # Check if the text hash matches
+        first_meta = existing["metadatas"][0]
+        if first_meta.get("doc_hash") == text_hash:
+            logging.getLogger(__name__).info(
+                f"Source '{name}' has not changed (hash matches). Skipping ingestion."
+            )
+            # Rebuild BM25 just in case (fast, safe)
+            try:
+                from backend.retrieval.bm25_index import build_bm25_index
+                build_bm25_index()
+            except Exception:
+                pass
+            return {
+                "id": first_meta["source_id"],
+                "name": name,
+                "chunks": len(existing["ids"]),
+                "ingestion_time": 0.0,
+                "skipped": True
+            }
+        else:
+            # Hash mismatch - delete old chunks
+            logging.getLogger(__name__).info(
+                f"Source '{name}' changed. Deleting old chunks and re-ingesting."
+            )
+            _collection.delete(ids=existing["ids"])
+
     chunks_meta = chunk_text_with_metadata(text, name)
     if not chunks_meta:
         raise ValueError("Source text is empty")
@@ -189,13 +183,21 @@ def add_source(name: str, text: str) -> dict[str, Any]:
             "chunk_index": i,
             "page_number": c["page_number"],
             "topic": c["topic"],
-            "context_blurb": blurbs[i]
+            "context_blurb": blurbs[i],
+            "doc_hash": text_hash
         }
         for i, c in enumerate(chunks_meta)
     ]
 
     # Store the original chunks in the collection but with the annotated embeddings
     _collection.add(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
+
+    # Rebuild BM25 index after adding/updating documents
+    try:
+        from backend.retrieval.bm25_index import build_bm25_index
+        build_bm25_index()
+    except Exception:
+        pass
 
     elapsed = time.time() - start_time
     logging.getLogger(__name__).info(
@@ -252,6 +254,14 @@ def delete_source(source_id: str) -> bool:
     if not ids:
         return False
     _collection.delete(ids=ids)
+
+    # Rebuild BM25 index after deletion
+    try:
+        from backend.retrieval.bm25_index import build_bm25_index
+        build_bm25_index()
+    except Exception:
+        pass
+
     return True
 
 

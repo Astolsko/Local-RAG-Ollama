@@ -1015,3 +1015,10 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: 1fr 1fr;
   gap: 1rem;
 }
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

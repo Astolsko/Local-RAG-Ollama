@@ -52,29 +52,52 @@ def main():
     for file_path in SOURCE_DIR.rglob("*"):
         if not file_path.is_file():
             continue
+            
+        # Check allowed extension before parsing/hashing
+        ext = file_path.suffix.lower()
+        from backend.ingestion.chunker import EXTENSION_MAP
+        if ext not in EXTENSION_MAP:
+            continue
+
+        try:
+            doc_text = file_path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        import hashlib
+        text_hash = hashlib.sha256(doc_text.encode("utf-8")).hexdigest()
+
+        # Check if existing chunks for this source name have the same hash
+        existing = _collection.get(where={"source_name": file_path.name}, include=["metadatas"])
+        if existing and existing.get("ids"):
+            first_meta = existing["metadatas"][0]
+            if first_meta.get("doc_hash") == text_hash:
+                print(f"Document '{file_path.name}' has not changed. Skipping ingestion.")
+                total_docs += 1
+                total_chunks += len(existing["ids"])
+                total_chunk_len += sum(len(doc_text) // len(existing["ids"]) for _ in existing["ids"])
+                continue
+            else:
+                # Delete existing chunks because file has changed
+                print(f"Document '{file_path.name}' changed. Re-ingesting...")
+                _collection.delete(ids=existing["ids"])
+
         try:
             chunks = chunker.split_file(file_path)
         except ValueError:
-            # Unsupported extension – skip
             continue
         if not chunks:
             continue
+            
         total_docs += 1
         total_chunks += len(chunks)
         total_chunk_len += sum(len(c["text"]) for c in chunks)
 
         # Use document_id as source_id for backward compatibility
         source_id = chunks[0]["document_id"]
-        # Delete any existing chunks for this document
-        existing = _collection.get(where={"source_id": source_id}, include=[])
-        if existing.get("ids"):
-            _collection.delete(ids=existing["ids"])
 
         ids = [c["chunk_id"] for c in chunks]
         documents = [c["text"] for c in chunks]
-        
-        # Read the original file text for context
-        doc_text = file_path.read_text(encoding="utf-8")
         
         # Generate blurbs using Contextualizer
         blurbs = contextualizer.get_blurbs_batch(doc_text, documents)
@@ -99,7 +122,8 @@ def main():
                 "source_file": c["source_file"],
                 "created_at": c["created_at"],
                 "doc_type": c["doc_type"],
-                "context_blurb": blurbs[i]
+                "context_blurb": blurbs[i],
+                "doc_hash": text_hash
             })
         _collection.add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
         # Rebuild BM25 index after adding/updating documents

@@ -90,9 +90,9 @@ def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], Lis
         t_start_rerank = time.perf_counter()
         fused = rerank(question, fused)
         rerank_latency = time.perf_counter() - t_start_rerank
-
-    # Trim to top_k after possible rerank
-    fused = fused[:top_k]
+        fused = fused[:config.RERANK_TOP_K]
+    else:
+        fused = fused[:top_k]
 
     # Unpack results
     docs = [p["doc"] for _, p in fused]
