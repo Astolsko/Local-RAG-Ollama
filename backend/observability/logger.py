@@ -23,7 +23,12 @@ def log_query(
     tokens_used: int,
     faithfulness_score: int | None = None,
     user_feedback: int | None = None,
-    refusal: bool = False
+    refusal: bool = False,
+    bm25_latency: float = 0.0,
+    vector_latency: float = 0.0,
+    rrf_latency: float = 0.0,
+    ttft_latency: float = 0.0,
+    cache_check_latency: float = 0.0
 ):
     log_entry = {
         "request_id": request_id,
@@ -38,7 +43,12 @@ def log_query(
             "retrieve": round(retrieve_latency * 1000, 2),
             "rerank": round(rerank_latency * 1000, 2),
             "generate": round(generate_latency * 1000, 2),
-            "total": round(total_latency * 1000, 2)
+            "total": round(total_latency * 1000, 2),
+            "bm25": round(bm25_latency * 1000, 2),
+            "vector": round(vector_latency * 1000, 2),
+            "rrf": round(rrf_latency * 1000, 2),
+            "ttft": round(ttft_latency * 1000, 2),
+            "cache_check": round(cache_check_latency * 1000, 2)
         },
         "tokens_used": tokens_used,
         "faithfulness_score": faithfulness_score,
@@ -69,5 +79,10 @@ def log_query(
         tokens_used=tokens_used,
         faithfulness_score=faithfulness_score,
         user_feedback=user_feedback,
-        refusal=refusal
+        refusal=refusal,
+        bm25_latency=round(bm25_latency * 1000, 2),
+        vector_latency=round(vector_latency * 1000, 2),
+        rrf_latency=round(rrf_latency * 1000, 2),
+        ttft_latency=round(ttft_latency * 1000, 2),
+        cache_check_latency=round(cache_check_latency * 1000, 2)
     )

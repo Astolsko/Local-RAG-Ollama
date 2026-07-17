@@ -349,6 +349,11 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
     retrieve_latency = 0.0
     rerank_latency = 0.0
     generate_latency = 0.0
+    bm25_latency = 0.0
+    vector_latency = 0.0
+    rrf_latency = 0.0
+    ttft_latency = 0.0
+    cache_check_latency = 0.0
     cache_hit_flag = False
     rewritten_query = None
     retrieved_ids = []
@@ -376,7 +381,9 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
             
             # Check semantic cache
             from backend.cache.semantic_cache import check_semantic_cache
+            t_cache_start = time.perf_counter()
             cache_hit = check_semantic_cache(question, query_embeddings[0])
+            cache_check_latency = time.perf_counter() - t_cache_start
             if cache_hit:
                 cache_hit_flag = True
                 cited_citations = cache_hit["citations"]
@@ -400,6 +407,9 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
             retrieve_latency = search_metrics["retrieve_latency"]
             rerank_latency = search_metrics["rerank_latency"]
             rerank_scores = search_metrics["rerank_scores"]
+            bm25_latency = search_metrics.get("bm25_latency", 0.0)
+            vector_latency = search_metrics.get("vector_latency", 0.0)
+            rrf_latency = search_metrics.get("rrf_latency", 0.0)
             retrieved_ids = ids
             
             if search_metrics["rewritten_queries"] and len(search_metrics["rewritten_queries"]) > 1:
@@ -450,6 +460,7 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
             prompt_tokens = res_data.get("prompt_eval_count", 0)
             response_tokens = res_data.get("eval_count", 0)
         generate_latency = time.perf_counter() - t_gen_start
+        ttft_latency = generate_latency
 
         # Post-processing inline citations and confidence score
         if is_rag:
@@ -508,7 +519,12 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
                     rerank_latency=rerank_latency,
                     generate_latency=generate_latency,
                     total_latency=total_latency,
-                    tokens_used=prompt_tokens + response_tokens
+                    tokens_used=prompt_tokens + response_tokens,
+                    bm25_latency=bm25_latency,
+                    vector_latency=vector_latency,
+                    rrf_latency=rrf_latency,
+                    ttft_latency=ttft_latency,
+                    cache_check_latency=cache_check_latency
                 )
             except Exception as le:
                 logging.getLogger(__name__).error(f"Failed to log metrics in finally block: {le}")

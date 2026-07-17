@@ -113,6 +113,11 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
     retrieve_latency = 0.0
     rerank_latency = 0.0
     generate_latency = 0.0
+    bm25_latency = 0.0
+    vector_latency = 0.0
+    rrf_latency = 0.0
+    ttft_latency = 0.0
+    cache_check_latency = 0.0
     cache_hit_flag = False
     rewritten_query = None
     retrieved_ids = []
@@ -144,7 +149,9 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 
                 # Check semantic cache
                 from backend.cache.semantic_cache import check_semantic_cache, set_semantic_cache
+                t_cache_start = time.perf_counter()
                 cache_hit = check_semantic_cache(question, query_embeddings[0])
+                cache_check_latency = time.perf_counter() - t_cache_start
                 if cache_hit:
                     cache_hit_flag = True
                     cited_citations = cache_hit["citations"]
@@ -153,8 +160,13 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                     yield json.dumps({"citations": cache_hit["citations"], "cached": True, "request_id": request_id}) + "\n"
                     
                     # Simulate token streaming of the cached response
+                    t_gen_start = time.perf_counter()
+                    first_token_received = False
                     words = cache_hit["answer_text"].split(" ")
                     for w in words:
+                        if not first_token_received:
+                            ttft_latency = time.perf_counter() - t_gen_start
+                            first_token_received = True
                         yield json.dumps({"text": w + " "}) + "\n"
                         await asyncio.sleep(0.01)
                         
@@ -188,6 +200,9 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 retrieve_latency = search_metrics["retrieve_latency"]
                 rerank_latency = search_metrics["rerank_latency"]
                 rerank_scores = search_metrics["rerank_scores"]
+                bm25_latency = search_metrics.get("bm25_latency", 0.0)
+                vector_latency = search_metrics.get("vector_latency", 0.0)
+                rrf_latency = search_metrics.get("rrf_latency", 0.0)
                 retrieved_ids = ids
                 
                 if search_metrics["rewritten_queries"] and len(search_metrics["rewritten_queries"]) > 1:
@@ -253,6 +268,7 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
         # 2. Stream tokens from Ollama
         full_answer = []
         t_gen_start = time.perf_counter()
+        first_token_received = False
         try:
             async with httpx.AsyncClient(timeout=120) as client:
                 async with client.stream(
@@ -271,6 +287,9 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                             response_tokens = chunk_data["eval_count"]
                         chunk_content = chunk_data.get("message", {}).get("content", "")
                         if chunk_content:
+                            if not first_token_received:
+                                ttft_latency = time.perf_counter() - t_gen_start
+                                first_token_received = True
                             full_answer.append(chunk_content)
                             yield json.dumps({"text": chunk_content}) + "\n"
         except Exception as e:
@@ -363,7 +382,12 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                     generate_latency=generate_latency,
                     total_latency=total_latency,
                     tokens_used=prompt_tokens + response_tokens,
-                    refusal=refusal_flag
+                    refusal=refusal_flag,
+                    bm25_latency=bm25_latency,
+                    vector_latency=vector_latency,
+                    rrf_latency=rrf_latency,
+                    ttft_latency=ttft_latency,
+                    cache_check_latency=cache_check_latency
                 )
             except Exception as le:
                 logger.error(f"Failed to log metrics in finally block: {le}")

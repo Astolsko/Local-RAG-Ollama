@@ -27,15 +27,29 @@ def init_db():
             tokens_used INTEGER,
             faithfulness_score INTEGER,
             user_feedback INTEGER,
-            refusal INTEGER DEFAULT 0
+            refusal INTEGER DEFAULT 0,
+            bm25_latency REAL,
+            vector_latency REAL,
+            rrf_latency REAL,
+            ttft_latency REAL,
+            cache_check_latency REAL
         )
     """)
     # Migration helper for existing DBs
-    try:
-        cursor.execute("ALTER TABLE request_logs ADD COLUMN refusal INTEGER DEFAULT 0")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    new_cols = [
+        ("refusal", "INTEGER DEFAULT 0"),
+        ("bm25_latency", "REAL"),
+        ("vector_latency", "REAL"),
+        ("rrf_latency", "REAL"),
+        ("ttft_latency", "REAL"),
+        ("cache_check_latency", "REAL")
+    ]
+    for col_name, col_type in new_cols:
+        try:
+            cursor.execute(f"ALTER TABLE request_logs ADD COLUMN {col_name} {col_type}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -70,18 +84,25 @@ def log_request(
     tokens_used: int,
     faithfulness_score: int | None = None,
     user_feedback: int | None = None,
-    refusal: bool = False
+    refusal: bool = False,
+    bm25_latency: float = 0.0,
+    vector_latency: float = 0.0,
+    rrf_latency: float = 0.0,
+    ttft_latency: float = 0.0,
+    cache_check_latency: float = 0.0
 ):
     try:
         init_db()  # Ensure database and table are initialized
         conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO request_logs (
                 request_id, timestamp, query, rewritten_query, retrieved_chunk_ids, rerank_scores,
                 cache_hit, embed_latency, retrieve_latency, rerank_latency, generate_latency,
-                total_latency, tokens_used, faithfulness_score, user_feedback, refusal
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                total_latency, tokens_used, faithfulness_score, user_feedback, refusal,
+                bm25_latency, vector_latency, rrf_latency, ttft_latency, cache_check_latency
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 rewritten_query = excluded.rewritten_query,
                 retrieved_chunk_ids = excluded.retrieved_chunk_ids,
@@ -95,7 +116,12 @@ def log_request(
                 tokens_used = excluded.tokens_used,
                 faithfulness_score = COALESCE(excluded.faithfulness_score, request_logs.faithfulness_score),
                 user_feedback = COALESCE(excluded.user_feedback, request_logs.user_feedback),
-                refusal = excluded.refusal
+                refusal = excluded.refusal,
+                bm25_latency = excluded.bm25_latency,
+                vector_latency = excluded.vector_latency,
+                rrf_latency = excluded.rrf_latency,
+                ttft_latency = excluded.ttft_latency,
+                cache_check_latency = excluded.cache_check_latency
         """, (
             request_id,
             datetime.utcnow().isoformat() + "Z",
@@ -112,7 +138,12 @@ def log_request(
             tokens_used,
             faithfulness_score,
             user_feedback,
-            1 if refusal else 0
+            1 if refusal else 0,
+            bm25_latency,
+            vector_latency,
+            rrf_latency,
+            ttft_latency,
+            cache_check_latency
         ))
         conn.commit()
         conn.close()

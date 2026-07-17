@@ -12,7 +12,13 @@ except ImportError:
 def _load() -> list[dict[str, Any]]:
     if not CHAT_HISTORY_FILE.exists():
         return []
-    return json.loads(CHAT_HISTORY_FILE.read_text(encoding="utf-8"))
+    try:
+        content = CHAT_HISTORY_FILE.read_text(encoding="utf-8")
+        if not content.strip():
+            return []
+        return json.loads(content)
+    except Exception:
+        return []
 
 
 def _save(chats: list[dict[str, Any]]) -> None:

@@ -73,6 +73,14 @@ def semantic_chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 5
     # Enforces chunk_size for oversized chunks.
     sentences = split_into_sentences(text)
     if len(sentences) <= 1:
+        if len(text) > chunk_size:
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            return splitter.split_text(text)
         return [text] if text.strip() else []
         
     try:

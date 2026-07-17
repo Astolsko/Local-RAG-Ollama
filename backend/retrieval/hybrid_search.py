@@ -69,10 +69,18 @@ def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], Lis
         asyncio.set_event_loop(loop)
         
     t_start_retrieve = time.perf_counter()
+    vector_latency_total = 0.0
+    bm25_latency_total = 0.0
     for q in queries:
         # Run both searches for each query
+        t_v_start = time.perf_counter()
         v_ids, v_docs, v_metas = loop.run_until_complete(_vector_search(q, top_k * 2))
+        vector_latency_total += time.perf_counter() - t_v_start
+        
+        t_b_start = time.perf_counter()
         b_ids, b_docs, b_metas = search_bm25(q, top_k * 2)
+        bm25_latency_total += time.perf_counter() - t_b_start
+        
         all_vector_payload.extend(
             [(doc_id, {"doc": doc, "meta": meta}) for doc_id, doc, meta in zip(v_ids, v_docs, v_metas)]
         )
@@ -81,7 +89,9 @@ def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], Lis
         )
 
     # Fuse across all queries
+    t_rrf_start = time.perf_counter()
     fused = _rrf_fusion(all_vector_payload, all_bm25_payload)
+    rrf_latency = time.perf_counter() - t_rrf_start
     retrieve_latency = time.perf_counter() - t_start_retrieve
 
     # Optional reranking (still based on the original question)
@@ -106,7 +116,10 @@ def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], Lis
         "rewritten_queries": queries,
         "retrieve_latency": retrieve_latency,
         "rerank_latency": rerank_latency,
-        "rerank_scores": rerank_scores
+        "rerank_scores": rerank_scores,
+        "vector_latency": vector_latency_total,
+        "bm25_latency": bm25_latency_total,
+        "rrf_latency": rrf_latency
     }
 
     return docs, metas, ids, metrics_info

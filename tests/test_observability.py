@@ -75,7 +75,7 @@ def test_database_logging_and_api(tmp_path, monkeypatch):
     conn.close()
     assert fb == 1
     
-    # 4. Test API Endpoint - fetch metrics
+    # 4. Test API Endpoint - fetch metrics with new columns
     response = client.get("/api/observability/metrics")
     assert response.status_code == 200
     metrics_data = response.json()
@@ -83,5 +83,16 @@ def test_database_logging_and_api(tmp_path, monkeypatch):
     assert metrics_data["summary"]["total_requests"] == 1
     assert metrics_data["summary"]["thumbs_up"] == 1
     assert metrics_data["summary"]["thumbs_down"] == 0
+    assert "avg_embed_latency" in metrics_data["summary"]
+    assert "avg_bm25_latency" in metrics_data["summary"]
+    assert "avg_vector_latency" in metrics_data["summary"]
+    assert "avg_rrf_latency" in metrics_data["summary"]
+    assert "avg_ttft_latency" in metrics_data["summary"]
     assert len(metrics_data["daily"]) == 1
     assert metrics_data["daily"][0]["requests"] == 1
+    assert "bm25_latency" in metrics_data["daily"][0]
+    assert "vector_latency" in metrics_data["daily"][0]
+    assert "rrf_latency" in metrics_data["daily"][0]
+    assert "ttft_latency" in metrics_data["daily"][0]
+    assert "cache_check_latency" in metrics_data["daily"][0]
+    assert "avg_faithfulness" in metrics_data["daily"][0]

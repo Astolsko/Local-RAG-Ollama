@@ -7,6 +7,7 @@ export default function MetricsDashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [activeTab, setActiveTab] = useState('performance') // 'performance' | 'retrieval' | 'usage'
+  const [selectedStage, setSelectedStage] = useState('embed')
 
   const loadData = async () => {
     setLoading(true)
@@ -469,6 +470,50 @@ export default function MetricsDashboard() {
                 <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Higher is better</span>
               </div>
               {renderLineChart(daily.map(d => ({ ...d, chr_pct: Math.round(d.cache_hit_rate * 100) })), 'chr_pct', 'date', '#2ecc71', 3, 0, 100)}
+            </div>
+
+            <div className="chart-box">
+              <div className="chart-title">
+                <span>Faithfulness Judge Trend (Avg 1-5)</span>
+                <span style={{ fontSize: '0.75rem', color: '#64748b' }}>Higher is better</span>
+              </div>
+              {renderLineChart(daily, 'avg_faithfulness', 'date', '#e67e22', 3, 1, 5)}
+            </div>
+
+            <div className="chart-box" style={{ gridColumn: 'span 2' }}>
+              <div className="chart-title" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.5rem' }}>
+                <span>Stage-wise Average Latency (ms)</span>
+                <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
+                  {[
+                    { key: 'cache_check', label: 'Cache Check' },
+                    { key: 'embed', label: 'Embedding' },
+                    { key: 'bm25', label: 'BM25' },
+                    { key: 'vector', label: 'Vector DB' },
+                    { key: 'rrf', label: 'RRF Fusion' },
+                    { key: 'rerank', label: 'Reranker' },
+                    { key: 'ttft', label: 'TTFT' },
+                    { key: 'generate', label: 'LLM Total' }
+                  ].map(stage => (
+                    <button
+                      key={stage.key}
+                      onClick={() => setSelectedStage(stage.key)}
+                      style={{
+                        padding: '0.25rem 0.5rem',
+                        fontSize: '0.7rem',
+                        borderRadius: '4px',
+                        border: '1px solid rgba(184, 135, 85, 0.2)',
+                        background: selectedStage === stage.key ? 'rgba(184, 135, 85, 0.15)' : 'rgba(255, 255, 255, 0.5)',
+                        color: selectedStage === stage.key ? '#b88755' : '#64748b',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {stage.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {renderLineChart(daily, `${selectedStage}_latency`, 'date', '#9b59b6')}
             </div>
           </div>
         )}

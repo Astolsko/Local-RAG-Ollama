@@ -344,18 +344,28 @@ def get_aggregated_metrics():
     import sqlite3
     from backend.observability.metrics_db import DB_PATH
     
+    empty_summary = {
+        "total_requests": 0,
+        "cache_hit_rate": 0.0,
+        "p50_total_latency": 0.0,
+        "p95_total_latency": 0.0,
+        "avg_faithfulness": 0.0,
+        "refusal_rate": 0.0,
+        "thumbs_up": 0,
+        "thumbs_down": 0,
+        "avg_embed_latency": 0.0,
+        "avg_bm25_latency": 0.0,
+        "avg_vector_latency": 0.0,
+        "avg_rrf_latency": 0.0,
+        "avg_rerank_latency": 0.0,
+        "avg_generate_latency": 0.0,
+        "avg_ttft_latency": 0.0,
+        "avg_cache_check_latency": 0.0
+    }
+
     if not DB_PATH.exists():
         return {
-            "summary": {
-                "total_requests": 0,
-                "cache_hit_rate": 0.0,
-                "p50_total_latency": 0.0,
-                "p95_total_latency": 0.0,
-                "avg_faithfulness": 0.0,
-                "refusal_rate": 0.0,
-                "thumbs_up": 0,
-                "thumbs_down": 0
-            },
+            "summary": empty_summary,
             "daily": []
         }
         
@@ -371,16 +381,7 @@ def get_aggregated_metrics():
         
     if not rows:
         return {
-            "summary": {
-                "total_requests": 0,
-                "cache_hit_rate": 0.0,
-                "p50_total_latency": 0.0,
-                "p95_total_latency": 0.0,
-                "avg_faithfulness": 0.0,
-                "refusal_rate": 0.0,
-                "thumbs_up": 0,
-                "thumbs_down": 0
-            },
+            "summary": empty_summary,
             "daily": []
         }
         
@@ -404,6 +405,10 @@ def get_aggregated_metrics():
     
     thumbs_up = sum(1 for r in rows if r["user_feedback"] == 1)
     thumbs_down = sum(1 for r in rows if r["user_feedback"] == -1)
+
+    def _avg(lst):
+        vals = [v for v in lst if v is not None]
+        return sum(vals) / len(vals) if vals else 0.0
     
     from collections import defaultdict
     daily_groups = defaultdict(list)
@@ -422,6 +427,9 @@ def get_aggregated_metrics():
         
         g_thumbs_up = sum(1 for r in group_rows if r["user_feedback"] == 1)
         g_thumbs_down = sum(1 for r in group_rows if r["user_feedback"] == -1)
+
+        g_faithfulness_scores = [r["faithfulness_score"] for r in group_rows if r["faithfulness_score"] is not None]
+        g_avg_faithfulness = sum(g_faithfulness_scores) / len(g_faithfulness_scores) if g_faithfulness_scores else 0.0
         
         daily_data.append({
             "date": date_str,
@@ -431,7 +439,16 @@ def get_aggregated_metrics():
             "p50_latency": g_p50,
             "p95_latency": g_p95,
             "thumbs_up": g_thumbs_up,
-            "thumbs_down": g_thumbs_down
+            "thumbs_down": g_thumbs_down,
+            "embed_latency": _avg([r.get("embed_latency") for r in group_rows]),
+            "bm25_latency": _avg([r.get("bm25_latency") for r in group_rows]),
+            "vector_latency": _avg([r.get("vector_latency") for r in group_rows]),
+            "rrf_latency": _avg([r.get("rrf_latency") for r in group_rows]),
+            "rerank_latency": _avg([r.get("rerank_latency") for r in group_rows]),
+            "generate_latency": _avg([r.get("generate_latency") for r in group_rows]),
+            "ttft_latency": _avg([r.get("ttft_latency") for r in group_rows]),
+            "cache_check_latency": _avg([r.get("cache_check_latency") for r in group_rows]),
+            "avg_faithfulness": g_avg_faithfulness
         })
         
     return {
@@ -443,7 +460,15 @@ def get_aggregated_metrics():
             "avg_faithfulness": avg_faithfulness,
             "refusal_rate": refusal_rate,
             "thumbs_up": thumbs_up,
-            "thumbs_down": thumbs_down
+            "thumbs_down": thumbs_down,
+            "avg_embed_latency": _avg([r.get("embed_latency") for r in rows]),
+            "avg_bm25_latency": _avg([r.get("bm25_latency") for r in rows]),
+            "avg_vector_latency": _avg([r.get("vector_latency") for r in rows]),
+            "avg_rrf_latency": _avg([r.get("rrf_latency") for r in rows]),
+            "avg_rerank_latency": _avg([r.get("rerank_latency") for r in rows]),
+            "avg_generate_latency": _avg([r.get("generate_latency") for r in rows]),
+            "avg_ttft_latency": _avg([r.get("ttft_latency") for r in rows]),
+            "avg_cache_check_latency": _avg([r.get("cache_check_latency") for r in rows])
         },
         "daily": daily_data
     }
