@@ -263,6 +263,16 @@ The application behavior can be customized by setting environment variables in a
 | `REDIS_URL` | `redis://localhost:6379/0` | Connection string for Redis |
 | `SESSION_TTL` | `86400` (1 day) | How long a chat session remains cached in Redis |
 | `PROMPT_CACHE_TTL`| `3600` (1 hour) | Lifespan of semantic cache objects |
+| `MODEL_TIER` | `auto` | `auto\|small\|medium\|large`. `auto` picks by RAM: <10 GB small, 10–20 GB medium, >20 GB large |
+| `REWRITE_MODEL` | *(empty)* | Model for query rewriting. Empty means use the tier's choice |
+| `EXTRACT_MODEL` | *(empty)* | Model for entity extraction. Empty means use the tier's choice |
+| `OLLAMA_KEEP_ALIVE` | `10m` | How long Ollama keeps models resident, avoiding reloads between requests |
+| `RAG_DATA_DIR` | *(unset)* | Overrides the `data/` directory. Used by the eval harness to isolate its runs |
+
+If a tier's model is not pulled in Ollama, the app logs a warning and falls back to
+`LLM_MODEL`, so it keeps working on a machine that only has the small model.
+`GET /api/health` reports the active `tier`, `ram_gb`, resolved `models`, and any
+`missing_models` you can `ollama pull`.
 
 ---
 

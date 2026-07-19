@@ -28,7 +28,8 @@ def log_query(
     vector_latency: float = 0.0,
     rrf_latency: float = 0.0,
     ttft_latency: float = 0.0,
-    cache_check_latency: float = 0.0
+    cache_check_latency: float = 0.0,
+    rewrite_skipped: bool = False
 ):
     log_entry = {
         "request_id": request_id,
@@ -53,7 +54,8 @@ def log_query(
         "tokens_used": tokens_used,
         "faithfulness_score": faithfulness_score,
         "user_feedback": user_feedback,
-        "refusal": refusal
+        "refusal": refusal,
+        "rewrite_skipped": rewrite_skipped
     }
     
     try:
@@ -84,5 +86,6 @@ def log_query(
         vector_latency=round(vector_latency * 1000, 2),
         rrf_latency=round(rrf_latency * 1000, 2),
         ttft_latency=round(ttft_latency * 1000, 2),
-        cache_check_latency=round(cache_check_latency * 1000, 2)
+        cache_check_latency=round(cache_check_latency * 1000, 2),
+        rewrite_skipped=rewrite_skipped
     )

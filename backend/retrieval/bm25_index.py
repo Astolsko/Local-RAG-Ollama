@@ -50,9 +50,10 @@ def _load_index() -> dict | None:
     with open(INDEX_PATH, "rb") as f:
         return pickle.load(f)
 
-def search_bm25(query: str, top_k: int = 20) -> Tuple[List[str], List[str], List[Any]]:
+def search_bm25(query: str, top_k: int = 20, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
     """Return top_k (ids, docs, metas) for the given query using BM25.
     If the index does not exist, returns empty lists.
+    When ``source_ids`` is given, only chunks from those sources are considered.
     """
     index = _load_index()
     if not index:
@@ -63,7 +64,12 @@ def search_bm25(query: str, top_k: int = 20) -> Tuple[List[str], List[str], List
     metas: List[Any] = index["metas"]
     tokenized_query = tokenize(query)
     scores = bm25.get_scores(tokenized_query)
-    ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:top_k]
+    ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+    if source_ids:
+        allowed = set(source_ids)
+        # Filter before truncating, otherwise top_k is spent on excluded sources
+        ranked = [(i, s) for i, s in ranked if (metas[i] or {}).get("source_id") in allowed]
+    ranked = ranked[:top_k]
     top_ids = [ids[i] for i, _ in ranked]
     top_docs = [docs[i] for i, _ in ranked]
     top_metas = [metas[i] for i, _ in ranked]

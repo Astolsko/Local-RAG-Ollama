@@ -10,7 +10,15 @@ from backend.retrieval.reranker import rerank
 
 RRF_K = 60
 
-async def _vector_search(question: str, top_k: int) -> Tuple[List[str], List[str], List[Any]]:
+def _source_filter(source_ids: list[str] | None) -> dict | None:
+    """Build a Chroma `where` clause restricting results to the given sources."""
+    if not source_ids:
+        return None
+    if len(source_ids) == 1:
+        return {"source_id": source_ids[0]}
+    return {"source_id": {"$in": source_ids}}
+
+async def _vector_search(question: str, top_k: int, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
     """Perform Chroma vector search returning (ids, docs, metas)."""
     # Lazy import to avoid circular dependency
     from backend import rag as rag_mod
@@ -18,6 +26,7 @@ async def _vector_search(question: str, top_k: int) -> Tuple[List[str], List[str
     hits = _collection.query(
         query_texts=[question],
         n_results=min(top_k, _collection.count()),
+        where=_source_filter(source_ids),
         include=["documents", "metadatas"],
     )
     ids = hits["ids"][0] if hits["ids"] else []
@@ -46,19 +55,25 @@ def _rrf_fusion(vector: List[Tuple[str, Any]], bm25: List[Tuple[str, Any]]) -> L
         merged.append((pid, payload_map[pid]))
     return merged
 
-def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], List[str], List[Any], dict]:
+def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] | None = None,
+                       has_history: bool = False) -> Tuple[List[str], List[str], List[Any], dict]:
     """Synchronously perform hybrid search (with optional query rewrite) and return documents, metadatas, and metrics.
     Returns four elements: docs, metas, ids, metrics_info.
+    When ``source_ids`` is given, both the dense and sparse paths are restricted to those sources.
+    ``has_history`` marks a follow-up turn, which always needs query rewriting.
     """
     import time
     if top_k is None:
         top_k = config.TOP_K
 
-    # Determine which queries to run
+    # Determine which queries to run. Rewriting costs an LLM call, so short
+    # self-contained queries skip it (see should_rewrite).
     queries: List[str] = [question]
-    if getattr(config, "ENABLE_QUERY_REWRITE", False) and should_rewrite(question):
+    rewrite_skipped = True
+    if getattr(config, "ENABLE_QUERY_REWRITE", False) and should_rewrite(question, has_history):
         # rewrite_query returns list: original + rewrites
-        queries = rewrite_query(question)
+        queries = rewrite_query(question, has_history)
+        rewrite_skipped = False
 
     all_vector_payload: List[Tuple[str, Any]] = []
     all_bm25_payload: List[Tuple[str, Any]] = []
@@ -74,11 +89,11 @@ def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], Lis
     for q in queries:
         # Run both searches for each query
         t_v_start = time.perf_counter()
-        v_ids, v_docs, v_metas = loop.run_until_complete(_vector_search(q, top_k * 2))
+        v_ids, v_docs, v_metas = loop.run_until_complete(_vector_search(q, top_k * 2, source_ids))
         vector_latency_total += time.perf_counter() - t_v_start
-        
+
         t_b_start = time.perf_counter()
-        b_ids, b_docs, b_metas = search_bm25(q, top_k * 2)
+        b_ids, b_docs, b_metas = search_bm25(q, top_k * 2, source_ids)
         bm25_latency_total += time.perf_counter() - t_b_start
         
         all_vector_payload.extend(
@@ -114,6 +129,7 @@ def hybrid_search_sync(question: str, top_k: int = None) -> Tuple[List[str], Lis
 
     metrics_info = {
         "rewritten_queries": queries,
+        "rewrite_skipped": rewrite_skipped,
         "retrieve_latency": retrieve_latency,
         "rerank_latency": rerank_latency,
         "rerank_scores": rerank_scores,

@@ -55,7 +55,8 @@ class Contextualizer:
                         "stream": False,
                         "options": {
                             "temperature": 0.0
-                        }
+                        },
+                        "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")
                     }
                 )
                 r_post.raise_for_status()
@@ -128,7 +129,8 @@ class Contextualizer:
                                 "stream": False,
                                 "options": {
                                     "temperature": 0.0
-                                }
+                                },
+                                "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")
                             }
                         )
                         r_post.raise_for_status()

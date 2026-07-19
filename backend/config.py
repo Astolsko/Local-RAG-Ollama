@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
+# RAG_DATA_DIR lets the eval harness point the whole app (chroma, bm25 index, metrics
+# db, settings) at an isolated directory so a run never touches the user's documents.
+DATA_DIR = Path(os.environ.get("RAG_DATA_DIR") or ROOT / "data")
 CHROMA_DIR = DATA_DIR / "chroma"
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 SYSTEM_PROMPT_FILE = DATA_DIR / "system_prompt.txt"
@@ -22,6 +24,11 @@ DEFAULT_SETTINGS = {
     "OLLAMA_BASE": "http://localhost:11434",
     "EMBED_MODEL": "nomic-embed-text",
     "LLM_MODEL": "qwen2.5:0.5b",
+    # auto|small|medium|large -- see backend/model_tiers.py. Empty per-role models
+    # mean "use the tier's choice"; setting one explicitly overrides the tier.
+    "MODEL_TIER": "auto",
+    "REWRITE_MODEL": "",
+    "EXTRACT_MODEL": "",
     "REDIS_URL": "redis://127.0.0.1:6379/0?protocol=2",
     "CHUNK_SIZE": 500,
     "CHUNK_OVERLAP": 50,
@@ -34,10 +41,11 @@ DEFAULT_SETTINGS = {
     "RERANK_MODEL": "BAAI/bge-reranker-base",
     "RERANK_TOP_K": 8,
     "ENABLE_QUERY_REWRITE": True,
-    "QUERY_REWRITE_MODEL": "{OLLAMA_MODEL}",
     "QUERY_REWRITE_TIMEOUT_MS": 2000,
     "CACHE_SIMILARITY_THRESHOLD": 0.85,
-    "RATE_LIMIT_PER_MINUTE": 60
+    "RATE_LIMIT_PER_MINUTE": 60,
+    # Keeps models resident in Ollama between requests instead of reloading them.
+    "OLLAMA_KEEP_ALIVE": "10m"
 }
 
 def load_settings() -> dict:

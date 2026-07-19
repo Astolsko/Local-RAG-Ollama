@@ -32,7 +32,8 @@ def init_db():
             vector_latency REAL,
             rrf_latency REAL,
             ttft_latency REAL,
-            cache_check_latency REAL
+            cache_check_latency REAL,
+            rewrite_skipped INTEGER DEFAULT 0
         )
     """)
     # Migration helper for existing DBs
@@ -42,7 +43,8 @@ def init_db():
         ("vector_latency", "REAL"),
         ("rrf_latency", "REAL"),
         ("ttft_latency", "REAL"),
-        ("cache_check_latency", "REAL")
+        ("cache_check_latency", "REAL"),
+        ("rewrite_skipped", "INTEGER DEFAULT 0")
     ]
     for col_name, col_type in new_cols:
         try:
@@ -89,7 +91,8 @@ def log_request(
     vector_latency: float = 0.0,
     rrf_latency: float = 0.0,
     ttft_latency: float = 0.0,
-    cache_check_latency: float = 0.0
+    cache_check_latency: float = 0.0,
+    rewrite_skipped: bool = False
 ):
     try:
         init_db()  # Ensure database and table are initialized
@@ -101,8 +104,9 @@ def log_request(
                 request_id, timestamp, query, rewritten_query, retrieved_chunk_ids, rerank_scores,
                 cache_hit, embed_latency, retrieve_latency, rerank_latency, generate_latency,
                 total_latency, tokens_used, faithfulness_score, user_feedback, refusal,
-                bm25_latency, vector_latency, rrf_latency, ttft_latency, cache_check_latency
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                bm25_latency, vector_latency, rrf_latency, ttft_latency, cache_check_latency,
+                rewrite_skipped
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
                 rewritten_query = excluded.rewritten_query,
                 retrieved_chunk_ids = excluded.retrieved_chunk_ids,
@@ -121,7 +125,8 @@ def log_request(
                 vector_latency = excluded.vector_latency,
                 rrf_latency = excluded.rrf_latency,
                 ttft_latency = excluded.ttft_latency,
-                cache_check_latency = excluded.cache_check_latency
+                cache_check_latency = excluded.cache_check_latency,
+                rewrite_skipped = excluded.rewrite_skipped
         """, (
             request_id,
             datetime.utcnow().isoformat() + "Z",
@@ -143,7 +148,8 @@ def log_request(
             vector_latency,
             rrf_latency,
             ttft_latency,
-            cache_check_latency
+            cache_check_latency,
+            1 if rewrite_skipped else 0
         ))
         conn.commit()
         conn.close()

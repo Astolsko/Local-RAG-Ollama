@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 import config
 from chat_history import delete_chat, get_chat, list_chats, save_chat
-from backend.rag import add_source, ask, ask_stream, get_source, delete_source, get_system_prompt, list_sources, set_system_prompt
+from backend.rag import add_source, ask, get_source, delete_source, get_system_prompt, list_sources, set_system_prompt
 from redis_store import clear_session, get_session_messages, ping as redis_ping, require_redis
 
 config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,12 +126,23 @@ def health():
 
     all_ok = redis_ok and chroma_ok and ollama_ok
 
+    tier_info = {"tier": None, "ram_gb": None, "models": {}, "missing_models": []}
+    try:
+        from backend.model_tiers import status as tier_status
+        tier_info = tier_status()
+    except Exception:
+        pass
+
     return {
         "status": "ok" if all_ok else "degraded",
         "phase": 3,
         "ollama": config.OLLAMA_BASE,
         "embed_model": config.EMBED_MODEL,
         "llm_model": config.LLM_MODEL,
+        "tier": tier_info["tier"],
+        "ram_gb": tier_info["ram_gb"],
+        "models": tier_info["models"],
+        "missing_models": tier_info["missing_models"],
         "sources": len(list_sources()),
         "redis": redis_ok,
         "saved_chats": len(list_chats()),

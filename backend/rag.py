@@ -1,7 +1,5 @@
 import uuid
-import json
-from typing import Any, TypedDict
-from datetime import datetime
+from typing import Any
 
 import chromadb
 import httpx
@@ -15,25 +13,15 @@ from backend.retrieval.hybrid_search import hybrid_search_sync
 from redis_store import (
     append_session_turn,
     cache_system_prompt,
-    get_cached_rag,
     get_cached_system_prompt,
     get_session_messages,
-    set_cached_rag,
 )
 
 
 class OllamaEmbed(EmbeddingFunction):
     def __call__(self, input: Documents) -> Embeddings:
-        out: list[list[float]] = []
-        with httpx.Client(timeout=120) as client:
-            for text in input:
-                r = client.post(
-                    f"{config.OLLAMA_BASE}/api/embeddings",
-                    json={"model": config.EMBED_MODEL, "prompt": text},
-                )
-                r.raise_for_status()
-                out.append(r.json()["embedding"])
-        return out
+        from backend.embeddings import embed_texts
+        return embed_texts(list(input))
 
 
 _client = chromadb.PersistentClient(path=str(config.CHROMA_DIR))
@@ -295,44 +283,6 @@ def _ensure_system_prompt_cached() -> str:
     return prompt
 
 
-def _retrieve_context(question: str, system_prompt: str, source_ids: list[str] | None = None) -> tuple[str, list[dict[str, Any]], bool]:
-    if _collection.count() == 0:
-        raise ValueError("No sources indexed yet")
-
-    if source_ids is not None and len(source_ids) == 0:
-        raise ValueError("No sources selected. Please check at least one source in the right panel.")
-
-    source_count = _collection.count()
-    cached = get_cached_rag(question, source_count, system_prompt, source_ids)
-    if cached:
-        return cached["context"], cached["citations"], True
-
-    where_clause = None
-    if source_ids is not None:
-        if len(source_ids) == 1:
-            where_clause = {"source_id": source_ids[0]}
-        else:
-            where_clause = {"source_id": {"$in": source_ids}}
-
-    # Hybrid search: combine vector and BM25 using Reciprocal Rank Fusion
-    docs, metas, _, _ = hybrid_search_sync(question, top_k=min(config.TOP_K, source_count))
-    if not docs:
-        raise ValueError("No relevant context found in the selected sources")
-    context = "\n\n".join(f"[{m['source_name']}] {d}" for d, m in zip(docs, metas))
-    citations = [
-        {
-            "source_id": m.get("source_id", ""),
-            "source_name": m["source_name"],
-            "page_number": m.get("page_number", 1),
-            "topic": m.get("topic", "General Context"),
-            "chunk_index": m.get("chunk_index", 0)
-        }
-        for m in metas
-    ]
-    set_cached_rag(question, source_count, system_prompt, {"context": context, "citations": citations}, source_ids)
-    return context, citations, False
-
-
 def is_conversational_greeting(question: str) -> bool:
     q = question.strip().lower().rstrip("?.!")
     greetings = {"hi", "hello", "hey", "yo", "hola", "greetings", "good morning", "good afternoon", "good evening"}
@@ -403,7 +353,10 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
                 }
                 
             # Perform hybrid search retrieval
-            docs, metas, ids, search_metrics = hybrid_search_sync(question, top_k=min(config.TOP_K, _collection.count()))
+            has_history = bool(get_session_messages(session_id)) if session_id else False
+            docs, metas, ids, search_metrics = hybrid_search_sync(
+                question, top_k=min(config.TOP_K, _collection.count()),
+                source_ids=source_ids, has_history=has_history)
             retrieve_latency = search_metrics["retrieve_latency"]
             rerank_latency = search_metrics["rerank_latency"]
             rerank_scores = search_metrics["rerank_scores"]
@@ -452,7 +405,8 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
         with httpx.Client(timeout=300) as client:
             r = client.post(
                 f"{config.OLLAMA_BASE}/api/chat",
-                json={"model": config.LLM_MODEL, "messages": messages, "stream": False},
+                json={"model": config.LLM_MODEL, "messages": messages, "stream": False,
+                      "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")},
             )
             r.raise_for_status()
             res_data = r.json()
@@ -530,52 +484,3 @@ def ask(question: str, session_id: str | None = None, source_ids: list[str] | No
                 logging.getLogger(__name__).error(f"Failed to log metrics in finally block: {le}")
 
 
-def ask_stream(question: str, session_id: str | None = None, source_ids: list[str] | None = None):
-    question = question.strip()
-    if not question:
-        raise ValueError("Question is empty")
-
-    is_rag = source_ids is not None and len(source_ids) > 0 and not is_conversational_greeting(question)
-
-    if is_rag:
-        system_prompt = _ensure_system_prompt_cached()
-        context, citations, from_cache = _retrieve_context(question, system_prompt, source_ids)
-    else:
-        system_prompt = "You are a helpful, general-purpose AI assistant. Provide accurate, clear, and direct answers to the user's questions."
-        context = ""
-        citations = []
-        from_cache = False
-
-    # Yield citations/cache status first
-    yield json.dumps({"citations": citations, "cached": from_cache}) + "\n"
-
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    if session_id:
-        for msg in get_session_messages(session_id):
-            messages.append({"role": msg["role"], "content": msg["text"]})
-
-    if is_rag:
-        messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"})
-    else:
-        messages.append({"role": "user", "content": question})
-
-    full_answer = []
-    with httpx.Client(timeout=300) as client:
-        with client.stream(
-            "POST",
-            f"{config.OLLAMA_BASE}/api/chat",
-            json={"model": config.LLM_MODEL, "messages": messages, "stream": True},
-        ) as r:
-            r.raise_for_status()
-            for line in r.iter_lines():
-                if not line.strip():
-                    continue
-                chunk_data = json.loads(line)
-                chunk_content = chunk_data.get("message", {}).get("content", "")
-                if chunk_content:
-                    full_answer.append(chunk_content)
-                    yield json.dumps({"text": chunk_content}) + "\n"
-
-    answer_str = "".join(full_answer).strip()
-    if session_id:
-        append_session_turn(session_id, question, answer_str, citations)

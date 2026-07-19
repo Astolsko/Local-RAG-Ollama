@@ -19,6 +19,15 @@ def is_conversational_greeting(question: str) -> bool:
     greetings = {"hi", "hello", "hey", "yo", "hola", "greetings", "good morning", "good afternoon", "good evening"}
     return q in greetings or q.startswith(("hi ", "hello ", "hey "))
 
+
+def _generation_model() -> str:
+    """Tier-resolved generation model, falling back to the configured one."""
+    try:
+        from backend.model_tiers import model_for
+        return model_for("LLM_MODEL")
+    except Exception:
+        return config.LLM_MODEL
+
 def calculate_confidence(cited_chunks: list[dict]) -> float:
     """Calculate confidence score heuristically from vector distance or rerank score."""
     if not cited_chunks:
@@ -64,7 +73,8 @@ async def run_background_judge(query: str, answer: str, cited_chunks: list[dict]
                     "model": config.LLM_MODEL,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"temperature": 0.0}
+                    "options": {"temperature": 0.0},
+                    "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")
                 }
             )
             r.raise_for_status()
@@ -127,6 +137,7 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
     cited_citations = []
     answer_str = ""
     refusal_flag = False
+    rewrite_skipped = False
     
     question = question.strip()
     if not question:
@@ -136,7 +147,14 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
         # Check if we should use RAG
         from backend.rag import _collection
         is_rag = source_ids is not None and len(source_ids) > 0 and _collection.count() > 0 and not is_conversational_greeting(question)
-        
+
+        # Load session history once, up front: it decides whether the query needs
+        # rewriting (a follow-up may depend on earlier turns) and is reused below
+        # when building the prompt.
+        loop = asyncio.get_running_loop()
+        sess_msgs = await loop.run_in_executor(None, lambda: get_session_messages(session_id)) if session_id else []
+        has_history = bool(sess_msgs)
+
         query_embeddings = None
         if is_rag:
             try:
@@ -191,12 +209,13 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                     return
                     
                 # 1. Fetch relevant chunks using hybrid search
-                loop = asyncio.get_running_loop()
                 docs, metas, ids, search_metrics = await loop.run_in_executor(
-                    None, 
-                    lambda: hybrid_search_sync(question, top_k=min(config.TOP_K, _collection.count()))
+                    None,
+                    lambda: hybrid_search_sync(question, top_k=min(config.TOP_K, _collection.count()),
+                                               source_ids=source_ids, has_history=has_history)
                 )
                 
+                rewrite_skipped = search_metrics.get("rewrite_skipped", False)
                 retrieve_latency = search_metrics["retrieve_latency"]
                 rerank_latency = search_metrics["rerank_latency"]
                 rerank_scores = search_metrics["rerank_scores"]
@@ -246,21 +265,15 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
             
             # Prepare messages
             messages = [{"role": "system", "content": system_prompt}]
-            if session_id:
-                # We must load session messages inside run_in_executor to avoid blocking
-                sess_msgs = await loop.run_in_executor(None, lambda: get_session_messages(session_id))
-                for msg in sess_msgs:
-                    messages.append({"role": msg["role"], "content": msg["text"]})
-                    
+            for msg in sess_msgs:
+                messages.append({"role": msg["role"], "content": msg["text"]})
+
             messages.append({"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"})
         else:
             system_prompt = "You are a helpful, general-purpose AI assistant. Provide accurate, clear, and direct answers to the user's questions."
             messages = [{"role": "system", "content": system_prompt}]
-            if session_id:
-                loop = asyncio.get_running_loop()
-                sess_msgs = await loop.run_in_executor(None, lambda: get_session_messages(session_id))
-                for msg in sess_msgs:
-                    messages.append({"role": msg["role"], "content": msg["text"]})
+            for msg in sess_msgs:
+                messages.append({"role": msg["role"], "content": msg["text"]})
             messages.append({"role": "user", "content": question})
             initial_citations = []
             yield json.dumps({"citations": [], "cached": False, "request_id": request_id}) + "\n"
@@ -274,7 +287,8 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 async with client.stream(
                     "POST",
                     f"{config.OLLAMA_BASE}/api/chat",
-                    json={"model": config.LLM_MODEL, "messages": messages, "stream": True}
+                    json={"model": _generation_model(), "messages": messages, "stream": True,
+                          "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")}
                 ) as r:
                     r.raise_for_status()
                     async for line in r.aiter_lines():
@@ -387,7 +401,8 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                     vector_latency=vector_latency,
                     rrf_latency=rrf_latency,
                     ttft_latency=ttft_latency,
-                    cache_check_latency=cache_check_latency
+                    cache_check_latency=cache_check_latency,
+                    rewrite_skipped=rewrite_skipped
                 )
             except Exception as le:
                 logger.error(f"Failed to log metrics in finally block: {le}")

@@ -39,24 +39,12 @@ def split_into_sentences(text: str) -> List[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
-    if not texts:
-        return []
-    
-    def _embed_one(text: str) -> List[float]:
-        try:
-            with httpx.Client(timeout=30) as client:
-                r = client.post(
-                    f"{config.OLLAMA_BASE}/api/embeddings",
-                    json={"model": config.EMBED_MODEL, "prompt": text},
-                )
-                r.raise_for_status()
-                return r.json()["embedding"]
-        except Exception as e:
-            raise RuntimeError(f"Embedding failed: {e}") from e
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        embeddings = list(executor.map(_embed_one, texts))
-    return embeddings
+    # Batched via /api/embed; see backend/embeddings.py
+    from backend.embeddings import embed_texts as _embed
+    try:
+        return _embed(texts)
+    except Exception as e:
+        raise RuntimeError(f"Embedding failed: {e}") from e
 
 def cosine_distance(v1: List[float], v2: List[float]) -> float:
     arr1 = np.array(v1)

@@ -1,0 +1,104 @@
+KESTREL TERMINAL
+AUTOMATED CARGO HANDLING SYSTEM
+TECHNICAL SPECIFICATION — REVISION D
+
+Document number: KT-SPEC-0004-D
+Issued: 2 October 2024
+Supersedes: KT-SPEC-0004-C dated 19 April 2024
+Classification: Unrestricted
+
+1. SCOPE
+
+This specification defines the functional and performance requirements for the automated
+cargo handling system to be installed at Kestrel Terminal. It covers automated stacking
+cranes, ship-to-shore gantry cranes, the terminal operating system interface, and the
+electrical supply and backup provisions required to support them.
+
+This specification does not cover civil works, quay wall construction, dredging, or the
+landside gate complex, which are procured separately.
+
+2. EQUIPMENT SCHEDULE
+
+2.1 Ship-to-shore gantry cranes
+    Quantity: 12 units
+    Model: Orbis Meridian-class STS
+    Outreach: 68 meters
+    Rated lifting capacity: 65 tonnes under spreader
+    Rated hoist speed, loaded: 90 meters per minute
+    Rated hoist speed, empty: 180 meters per minute
+
+2.2 Automated stacking cranes
+    Quantity: 44 units
+    Model: Orbis ASC-9
+    Stacking height: 1 over 5 containers
+    Rail gauge: 31 meters
+    Positioning tolerance: plus or minus 15 millimeters
+
+2.3 Automated guided vehicles
+    Quantity: 96 units
+    Battery chemistry: lithium iron phosphate
+    Nominal charge cycle: 90 minutes to 80 percent
+
+3. PERFORMANCE REQUIREMENTS
+
+3.1 The system shall sustain a berth productivity of not less than 38 container moves per
+crane per hour, averaged over any continuous eight-hour period.
+
+3.2 The system shall achieve a terminal annual throughput of 1.8 million TEU at a stacking
+density not exceeding 1,450 TEU per hectare.
+
+3.3 System availability shall be not less than 99.2 percent, measured monthly and excluding
+scheduled maintenance windows agreed under section 7.
+
+3.4 Mean time to recover from a single-crane fault shall not exceed 45 minutes.
+
+4. ELECTRICAL SUPPLY
+
+4.1 Total connected load for the automated cargo handling system is 41.5 megawatts.
+
+4.2 Peak simultaneous demand, applying a diversity factor of 0.62, is 25.7 megawatts.
+
+4.3 Supply shall be taken at 33 kilovolts from two independent feeders originating at
+separate substations. Loss of either feeder shall not reduce system availability below the
+threshold in section 3.3.
+
+4.4 Regenerative braking energy recovered from hoist lowering shall be returned to the
+terminal distribution network. The supplier shall demonstrate a minimum recovery of 22
+percent of hoist energy consumption.
+
+4.5 Backup generation sized at 8 megawatts shall support safe container set-down, crane
+parking, and terminal operating system continuity for a minimum of four hours following
+total loss of utility supply.
+
+5. SUPPLIER OBLIGATIONS
+
+5.1 The supplier of record for all equipment in section 2 is Orbis Robotics, appointed under
+the automation contract approved by the Meridian Harbor Authority Board on 14 June 2024.
+
+5.2 The supplier shall maintain a resident engineering team of not fewer than six qualified
+personnel on site from the commencement of crane erection until twelve months after
+provisional acceptance.
+
+5.3 The supplier shall deliver operator and maintenance training for not fewer than 180
+Authority and terminal-operator personnel prior to provisional acceptance. Training content
+shall be developed in consultation with the recognized labor representative.
+
+6. ACCEPTANCE
+
+6.1 Provisional acceptance requires demonstration of the performance requirements in
+section 3 over a continuous 30-day proving period.
+
+6.2 Final acceptance occurs twelve months after provisional acceptance, subject to no
+unresolved category-A defects.
+
+6.3 Scheduled commissioning of the terminal is Q3 2027. Liquidated damages accrue at 140,000
+dollars per week of supplier-attributable delay beyond that date, capped at 8 percent of
+contract value.
+
+7. MAINTENANCE WINDOWS
+
+7.1 Scheduled maintenance shall be confined to windows agreed not less than 30 days in
+advance and shall not exceed 96 hours in any calendar month.
+
+7.2 Software updates to the terminal operating system interface shall be applied only within
+agreed windows and shall be reversible to the prior release within two hours.

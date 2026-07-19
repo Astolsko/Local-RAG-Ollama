@@ -9,3 +9,4 @@ httpx
 pytest
 rank-bm25
 sentence-transformers
+psutil
