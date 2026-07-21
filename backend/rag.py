@@ -250,6 +250,14 @@ def delete_source(source_id: str) -> bool:
     except Exception:
         pass
 
+    # Drop this doc's graph entities/relations (orphan cleanup) when the graph is in use.
+    if getattr(config, "GRAPH_ENABLED", False):
+        try:
+            from backend.graph import store as graph_store
+            graph_store.delete_doc(source_id)
+        except Exception:
+            pass
+
     return True
 
 

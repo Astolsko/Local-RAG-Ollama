@@ -70,7 +70,7 @@ async def run_background_judge(query: str, answer: str, cited_chunks: list[dict]
             r = await client.post(
                 f"{config.OLLAMA_BASE}/api/generate",
                 json={
-                    "model": config.LLM_MODEL,
+                    "model": _generation_model(),
                     "prompt": prompt,
                     "stream": False,
                     "options": {"temperature": 0.0},
@@ -138,7 +138,8 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
     answer_str = ""
     refusal_flag = False
     rewrite_skipped = False
-    
+    route_used = "vector"
+
     question = question.strip()
     if not question:
         raise ValueError("Question is empty")
@@ -196,7 +197,9 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                         "answer_text": cache_hit["answer_text"],
                         "prompt_tokens": 0,
                         "response_tokens": 0,
-                        "request_id": request_id
+                        "request_id": request_id,
+                        "generate_ms": round((time.perf_counter() - t_gen_start) * 1000, 1),
+                        "total_ms": round((time.perf_counter() - t_start) * 1000, 1)
                     }) + "\n"
                     
                     # Save session history in Redis
@@ -216,6 +219,7 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 )
                 
                 rewrite_skipped = search_metrics.get("rewrite_skipped", False)
+                route_used = search_metrics.get("route", "vector")
                 retrieve_latency = search_metrics["retrieve_latency"]
                 rerank_latency = search_metrics["rerank_latency"]
                 rerank_scores = search_metrics["rerank_scores"]
@@ -342,9 +346,12 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 "answer_text": answer_str,
                 "prompt_tokens": prompt_tokens,
                 "response_tokens": response_tokens,
-                "request_id": request_id
+                "request_id": request_id,
+                "generate_ms": round(generate_latency * 1000, 1),
+                "total_ms": round((time.perf_counter() - t_start) * 1000, 1),
+                "route": route_used
             }) + "\n"
-            
+
             # Save to semantic cache on cache MISS
             if query_embeddings:
                 from backend.cache.semantic_cache import set_semantic_cache
@@ -369,9 +376,11 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 "answer_text": answer_str,
                 "prompt_tokens": prompt_tokens,
                 "response_tokens": response_tokens,
-                "request_id": request_id
+                "request_id": request_id,
+                "generate_ms": round(generate_latency * 1000, 1),
+                "total_ms": round((time.perf_counter() - t_start) * 1000, 1)
             }) + "\n"
-            
+
             if session_id:
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(

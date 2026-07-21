@@ -1,12 +1,31 @@
-fastapi
-uvicorn
-chromadb
-ollama
-redis
-python-multipart
-pypdf
-httpx
-pytest
-rank-bm25
-sentence-transformers
-psutil
+# Pinned to the versions running in the `RAG` conda env (2026-07-22).
+# The Ollama server itself is NOT a pip package — install it separately
+# (https://ollama.com); the app talks to it over HTTP via httpx.
+
+# --- Web API ---
+fastapi==0.139.0
+uvicorn==0.50.0
+starlette==1.3.1
+pydantic==2.13.4
+python-multipart==0.0.32
+httpx==0.28.1
+
+# --- Storage / cache ---
+chromadb==1.5.9
+redis==8.0.1
+
+# --- Retrieval ---
+rank-bm25==0.2.2
+sentence-transformers==5.6.0
+langchain-text-splitters==1.1.2
+numpy==2.5.1
+
+# --- GraphRAG-lite ---
+networkx==3.6.1
+
+# --- Ingestion / system ---
+pypdf==6.14.2
+psutil==7.2.2
+
+# --- Tests ---
+pytest==9.1.1

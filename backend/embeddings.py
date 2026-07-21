@@ -48,7 +48,29 @@ def _embed_individually(client: httpx.Client, texts: list[str]) -> list[list[flo
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts, preserving input order."""
+    """Embed texts, preserving input order. Cached in Redis by (model, text)."""
+    if not texts:
+        return []
+
+    from backend.cache.embed_cache import get_cached, set_cached, record
+
+    model = config.EMBED_MODEL
+    cached = get_cached(model, texts)
+    miss_idx = [i for i, c in enumerate(cached) if c is None]
+    record(hits=len(texts) - len(miss_idx), misses=len(miss_idx))
+
+    if miss_idx:
+        miss_texts = [texts[i] for i in miss_idx]
+        fresh = _embed_uncached(miss_texts)
+        set_cached(model, list(zip(miss_texts, fresh)))
+        for j, i in enumerate(miss_idx):
+            cached[i] = fresh[j]
+
+    return cached  # type: ignore[return-value]  # all Nones filled above
+
+
+def _embed_uncached(texts: list[str]) -> list[list[float]]:
+    """Embed texts via Ollama, no cache. Preserves input order."""
     global _BATCH_SUPPORTED
     if not texts:
         return []

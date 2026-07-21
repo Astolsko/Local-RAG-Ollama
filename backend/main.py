@@ -6,7 +6,7 @@ sys.path.insert(0, str(backend_dir.parent))
 
 import uuid
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -21,6 +21,13 @@ config.CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 from backend.observability.metrics_db import init_db
 init_db()
+
+# Build the BM25 index once at startup (init_db no longer does this — see Task 2.0).
+try:
+    from backend.retrieval.bm25_index import build_bm25_index
+    build_bm25_index()
+except Exception:
+    pass
 
 app = FastAPI(title="RAG LLM", version="1.1.0")
 from rate_limit import RateLimitMiddleware
@@ -66,6 +73,7 @@ class SettingsUpdate(BaseModel):
     OLLAMA_BASE: str | None = None
     EMBED_MODEL: str | None = None
     LLM_MODEL: str | None = None
+    MODEL_TIER: str | None = None
     REDIS_URL: str | None = None
     CHUNK_SIZE: int | None = None
     CHUNK_OVERLAP: int | None = None
@@ -241,15 +249,18 @@ def get_sources():
 
 
 @app.post("/api/sources")
-def post_source(body: SourceIn):
+def post_source(body: SourceIn, background: BackgroundTasks):
     try:
-        return add_source(body.name.strip(), body.text)
+        result = add_source(body.name.strip(), body.text)
+        _maybe_index_graph(result, background)
+        return result
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
 
 @app.post("/api/sources/upload")
 async def upload_source(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     name: str | None = Form(None),
 ):
@@ -282,7 +293,9 @@ async def upload_source(
             ) from e
 
     try:
-        return add_source(source_name, text)
+        result = add_source(source_name, text)
+        _maybe_index_graph(result, background)
+        return result
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -292,6 +305,37 @@ def remove_source(source_id: str):
     if not delete_source(source_id):
         raise HTTPException(404, "Source not found")
     return {"deleted": source_id}
+
+
+# ---- GraphRAG-lite (behind GRAPH_ENABLED) ----
+
+def _maybe_index_graph(result: dict, background: "BackgroundTasks"):
+    """Schedule background graph indexing for a freshly ingested source, if enabled."""
+    if getattr(config, "GRAPH_ENABLED", False) and result and result.get("id"):
+        from backend.graph.indexer import index_document
+        background.add_task(index_document, result["id"])
+
+
+@app.post("/api/graph/index/{doc_id}")
+def graph_index(doc_id: str, background: BackgroundTasks):
+    if not getattr(config, "GRAPH_ENABLED", False):
+        raise HTTPException(400, "GRAPH_ENABLED is false")
+    from backend.graph.indexer import index_document
+    background.add_task(index_document, doc_id)
+    return {"queued": doc_id}
+
+
+@app.get("/api/graph/status")
+def graph_status():
+    from backend.graph.indexer import all_status
+    return all_status()
+
+
+@app.get("/api/graph/summary")
+def graph_summary():
+    from backend.graph import store
+    store.init_db()
+    return store.counts()
 
 
 @app.post("/api/ask")
@@ -322,11 +366,10 @@ def submit_feedback(body: FeedbackIn):
 @app.get("/api/observability/eval-history")
 def get_eval_history():
     import csv
-    # eval directory is sibling to backend
-    eval_history_path = Path("eval/history.csv")
-    if not eval_history_path.exists():
-        eval_history_path = Path("../eval/history.csv")
-        
+    # eval assets follow the code (repo), not DATA_DIR — anchored via backend/paths.py so it
+    # resolves no matter the working directory.
+    import paths
+    eval_history_path = paths.EVAL_DIR / "history.csv"
     if not eval_history_path.exists():
         return []
         
@@ -371,7 +414,8 @@ def get_aggregated_metrics():
         "avg_rerank_latency": 0.0,
         "avg_generate_latency": 0.0,
         "avg_ttft_latency": 0.0,
-        "avg_cache_check_latency": 0.0
+        "avg_cache_check_latency": 0.0,
+        "embed_cache_hit_rate": 0.0
     }
 
     if not DB_PATH.exists():
@@ -479,7 +523,21 @@ def get_aggregated_metrics():
             "avg_rerank_latency": _avg([r.get("rerank_latency") for r in rows]),
             "avg_generate_latency": _avg([r.get("generate_latency") for r in rows]),
             "avg_ttft_latency": _avg([r.get("ttft_latency") for r in rows]),
-            "avg_cache_check_latency": _avg([r.get("cache_check_latency") for r in rows])
+            "avg_cache_check_latency": _avg([r.get("cache_check_latency") for r in rows]),
+            "embed_cache_hit_rate": _embed_cache_hit_rate()
         },
         "daily": daily_data
     }
+
+
+def _embed_cache_hit_rate() -> float:
+    """Embedding cache hit rate from Redis counters (Task 2.4). 0.0 if unavailable."""
+    try:
+        from redis_store import get_redis
+        r = get_redis()
+        hits = int(r.get("metrics:embed_cache_hits") or 0)
+        misses = int(r.get("metrics:embed_cache_misses") or 0)
+        total = hits + misses
+        return hits / total if total else 0.0
+    except Exception:
+        return 0.0

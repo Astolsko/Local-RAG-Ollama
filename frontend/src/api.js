@@ -111,13 +111,15 @@ export async function askQuestionStream(question, sessionId, sourceIds, onCitati
         try {
           const parsed = JSON.parse(line)
           if (parsed.citations !== undefined) {
-            onCitations({ 
-              citations: parsed.citations, 
-              cached: parsed.cached, 
+            onCitations({
+              citations: parsed.citations,
+              cached: parsed.cached,
               confidence: parsed.confidence,
               prompt_tokens: parsed.prompt_tokens,
               response_tokens: parsed.response_tokens,
-              request_id: parsed.request_id
+              request_id: parsed.request_id,
+              generate_ms: parsed.generate_ms,
+              total_ms: parsed.total_ms
             })
           } else if (parsed.text !== undefined) {
             onChunk(parsed.text)

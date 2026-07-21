@@ -20,8 +20,9 @@ from backend.rag import _collection, OllamaEmbed
 from backend.ingestion.contextualizer import Contextualizer
 from backend import config
 
-# Directory containing source documents – can be overridden via env var
-SOURCE_DIR = Path(os.getenv("INGEST_SRC_DIR", "data/documents"))
+# Directory containing source documents. Defaults under the active DATA_DIR (see
+# backend/paths.py); still overridable per-run via INGEST_SRC_DIR.
+SOURCE_DIR = Path(os.getenv("INGEST_SRC_DIR") or (config.DATA_DIR / "documents"))
 
 def _load_existing_metrics(metric_path: Path) -> list:
     if metric_path.is_file():
@@ -148,7 +149,7 @@ def main():
         "avg_chunk_token_len": round(avg_len, 2),
         "ingestion_time_per_doc": round(ingestion_time_per_doc, 4)
     }
-    metric_path = Path("data/ingest_metrics.json")
+    metric_path = config.DATA_DIR / "ingest_metrics.json"
     _save_metrics(metric_path, metric_entry)
     print(json.dumps(metric_entry, indent=2))
 

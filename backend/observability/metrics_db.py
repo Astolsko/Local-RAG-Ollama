@@ -63,13 +63,11 @@ def init_db():
             r.delete("prompt:system")
     except Exception:
         pass
-
-    # Rebuild BM25 index to apply new tokenization
-    try:
-        from backend.retrieval.bm25_index import build_bm25_index
-        build_bm25_index()
-    except Exception:
-        pass
+    # NOTE: BM25 index building intentionally does NOT live here. init_db() is called on
+    # every request via log_request/update_faithfulness/update_feedback, and rebuilding the
+    # whole index per request is O(corpus) wasted work. The index is (re)built where the
+    # corpus changes — rag.add_source/delete_source, reingest — and once at app startup
+    # (see main.py). See implementation.md Task 2.0.
 
 def log_request(
     request_id: str,

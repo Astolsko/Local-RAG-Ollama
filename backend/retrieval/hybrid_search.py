@@ -1,8 +1,11 @@
 import os
 import asyncio
+import logging
 from typing import List, Tuple, Any
 
 import config
+
+logger = logging.getLogger(__name__)
 from backend.retrieval.query_rewrite import should_rewrite, rewrite_query
 # import backend.rag as rag_mod  # moved inside function
 from backend.retrieval.bm25_index import search_bm25
@@ -18,8 +21,8 @@ def _source_filter(source_ids: list[str] | None) -> dict | None:
         return {"source_id": source_ids[0]}
     return {"source_id": {"$in": source_ids}}
 
-async def _vector_search(question: str, top_k: int, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
-    """Perform Chroma vector search returning (ids, docs, metas)."""
+def _vector_search(question: str, top_k: int, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
+    """Perform Chroma vector search returning (ids, docs, metas). Blocking (Chroma is sync)."""
     # Lazy import to avoid circular dependency
     from backend import rag as rag_mod
     _collection = rag_mod._collection
@@ -33,6 +36,12 @@ async def _vector_search(question: str, top_k: int, source_ids: list[str] | None
     docs = hits["documents"][0] if hits["documents"] else []
     metas = hits["metadatas"][0] if hits["metadatas"] else []
     return ids, docs, metas
+
+
+async def _search_all(fn, queries, top_k, source_ids):
+    """Run a blocking search `fn(q, top_k, source_ids)` across queries concurrently."""
+    import asyncio as _a
+    return await _a.gather(*[_a.to_thread(fn, q, top_k, source_ids) for q in queries])
 
 def _rrf_fusion(vector: List[Tuple[str, Any]], bm25: List[Tuple[str, Any]]) -> List[Tuple[str, Any]]:
     """Combine rankings using Reciprocal Rank Fusion.
@@ -84,21 +93,22 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
         asyncio.set_event_loop(loop)
         
     t_start_retrieve = time.perf_counter()
-    vector_latency_total = 0.0
-    bm25_latency_total = 0.0
-    for q in queries:
-        # Run both searches for each query
-        t_v_start = time.perf_counter()
-        v_ids, v_docs, v_metas = loop.run_until_complete(_vector_search(q, top_k * 2, source_ids))
-        vector_latency_total += time.perf_counter() - t_v_start
+    # Fan out each backend across all (rewritten) queries concurrently instead of the old
+    # serial loop — up to 4 queries × 2 backends were run one at a time. Results are
+    # collected in query order, so the fused ranking is identical to the serial version.
+    t_v_start = time.perf_counter()
+    vector_results = loop.run_until_complete(_search_all(_vector_search, queries, top_k * 2, source_ids))
+    vector_latency_total = time.perf_counter() - t_v_start
 
-        t_b_start = time.perf_counter()
-        b_ids, b_docs, b_metas = search_bm25(q, top_k * 2, source_ids)
-        bm25_latency_total += time.perf_counter() - t_b_start
-        
+    t_b_start = time.perf_counter()
+    bm25_results = loop.run_until_complete(_search_all(search_bm25, queries, top_k * 2, source_ids))
+    bm25_latency_total = time.perf_counter() - t_b_start
+
+    for v_ids, v_docs, v_metas in vector_results:
         all_vector_payload.extend(
             [(doc_id, {"doc": doc, "meta": meta}) for doc_id, doc, meta in zip(v_ids, v_docs, v_metas)]
         )
+    for b_ids, b_docs, b_metas in bm25_results:
         all_bm25_payload.extend(
             [(doc_id, {"doc": doc, "meta": meta}) for doc_id, doc, meta in zip(b_ids, b_docs, b_metas)]
         )
@@ -107,11 +117,22 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
     t_rrf_start = time.perf_counter()
     fused = _rrf_fusion(all_vector_payload, all_bm25_payload)
     rrf_latency = time.perf_counter() - t_rrf_start
+
+    # GraphRAG-lite augmentation — no-op unless GRAPH_ENABLED. Merges graph candidates into
+    # the fused list so they get reranked alongside vector results (a misroute costs quality,
+    # never correctness). route stays "vector" when the flag is off.
+    route = "vector"
+    if getattr(config, "GRAPH_ENABLED", False):
+        route = _augment_with_graph(question, fused, source_ids)
+
     retrieve_latency = time.perf_counter() - t_start_retrieve
 
     # Optional reranking (still based on the original question)
     rerank_latency = 0.0
     if getattr(config, "RERANK_ENABLED", False):
+        # Cap candidates before reranking — cross-encoder cost is linear in candidate count,
+        # and RRF has already surfaced the best few. See Task 2.2.
+        fused = fused[:getattr(config, "RRF_TOP_N", 12)]
         t_start_rerank = time.perf_counter()
         fused = rerank(question, fused)
         rerank_latency = time.perf_counter() - t_start_rerank
@@ -135,7 +156,51 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
         "rerank_scores": rerank_scores,
         "vector_latency": vector_latency_total,
         "bm25_latency": bm25_latency_total,
-        "rrf_latency": rrf_latency
+        "rrf_latency": rrf_latency,
+        "route": route
     }
 
     return docs, metas, ids, metrics_info
+
+
+def _augment_with_graph(question: str, fused: List[Tuple[str, Any]],
+                        source_ids: list[str] | None) -> str:
+    """Merge graph candidates into `fused` in place. Returns the chosen route label."""
+    try:
+        from backend.retrieval.router import route as route_query
+        from backend.graph import retrieval as graph_retrieval
+    except Exception as e:
+        logger.warning(f"graph augmentation unavailable: {e}")
+        return "vector"
+
+    try:
+        route = route_query(question)
+    except Exception as e:
+        logger.warning(f"router failed, staying on vector path: {e}")
+        return "vector"
+
+    existing = {i for i, _ in fused}
+    allowed = set(source_ids) if source_ids else None
+
+    def _add(cid, payload):
+        if cid in existing:
+            return
+        if allowed is not None and (payload.get("meta") or {}).get("source_id") not in allowed:
+            return
+        fused.append((cid, payload))
+        existing.add(cid)
+
+    try:
+        if route == "relational":
+            for cid, payload in graph_retrieval.relational_candidates(question):
+                _add(cid, payload)
+        elif route == "global":
+            for cs in graph_retrieval.community_summaries():
+                _add(f"community:{cs['id']}", {
+                    "doc": cs["summary"],
+                    "meta": {"source_name": "Community Summary", "source_id": "", "chunk_index": 0},
+                })
+    except Exception as e:
+        logger.warning(f"graph retrieval failed on route={route}: {e}")
+
+    return route

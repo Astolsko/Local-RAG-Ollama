@@ -193,6 +193,7 @@ function App() {
     OLLAMA_BASE: '',
     EMBED_MODEL: '',
     LLM_MODEL: '',
+    MODEL_TIER: 'auto',
     REDIS_URL: '',
     CHUNK_SIZE: 500,
     CHUNK_OVERLAP: 50,
@@ -452,7 +453,9 @@ function App() {
                 confidence: citData.confidence,
                 prompt_tokens: citData.prompt_tokens,
                 response_tokens: citData.response_tokens,
-                request_id: citData.request_id
+                request_id: citData.request_id,
+                generate_ms: citData.generate_ms,
+                total_ms: citData.total_ms
               }
             }
             return next
@@ -737,6 +740,19 @@ function App() {
                     border: '1px solid currentColor'
                   }}>
                     {msg.prompt_tokens === 0 && msg.response_tokens === 0 ? "Tokens: 0 (Cached)" : `Tokens: ${msg.prompt_tokens} prompt / ${msg.response_tokens} response`}
+                  </span>
+                )}
+                {msg.role === 'assistant' && msg.total_ms !== undefined && (
+                  <span className="tag latency-tag" style={{
+                    backgroundColor: 'rgba(155, 89, 182, 0.15)',
+                    color: '#9b59b6',
+                    marginLeft: '0.5rem',
+                    fontWeight: 'bold',
+                    border: '1px solid currentColor'
+                  }}>
+                    {(msg.total_ms / 1000).toFixed(1)}s
+                    {msg.response_tokens > 0 && msg.generate_ms > 0 &&
+                      ` · ${Math.round(msg.response_tokens / (msg.generate_ms / 1000))} tok/s`}
                   </span>
                 )}
                 {msg.role === 'assistant' && msg.request_id && (
@@ -1074,15 +1090,30 @@ function App() {
                             </select>
                           </div>
                         </div>
-                        <div className="form-group">
-                          <label>Redis Connection URL</label>
-                          <input 
-                            type="text" 
-                            value={settingsData.REDIS_URL || ''} 
-                            onChange={(e) => setSettingsData({ ...settingsData, REDIS_URL: e.target.value })} 
-                            disabled={busy}
-                            required
-                          />
+                        <div className="form-row">
+                          <div className="form-group">
+                            <label>Model Tier</label>
+                            <select
+                              value={settingsData.MODEL_TIER || 'auto'}
+                              onChange={(e) => setSettingsData({ ...settingsData, MODEL_TIER: e.target.value })}
+                              disabled={busy}
+                            >
+                              <option value="auto">auto (detect from RAM/GPU)</option>
+                              <option value="small">small</option>
+                              <option value="medium">medium</option>
+                              <option value="large">large</option>
+                            </select>
+                          </div>
+                          <div className="form-group">
+                            <label>Redis Connection URL</label>
+                            <input
+                              type="text"
+                              value={settingsData.REDIS_URL || ''}
+                              onChange={(e) => setSettingsData({ ...settingsData, REDIS_URL: e.target.value })}
+                              disabled={busy}
+                              required
+                            />
+                          </div>
                         </div>
                       </>
                     )}

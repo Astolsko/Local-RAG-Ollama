@@ -2,10 +2,16 @@ import json
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-# RAG_DATA_DIR lets the eval harness point the whole app (chroma, bm25 index, metrics
-# db, settings) at an isolated directory so a run never touches the user's documents.
-DATA_DIR = Path(os.environ.get("RAG_DATA_DIR") or ROOT / "data")
+# All storage locations resolve from backend/paths.py — edit that one file to move data
+# between local disk and Colab/Drive. RAG_DATA_DIR (env) still overrides everything, which
+# is how the eval harness isolates its runs.
+try:
+    import paths  # when backend/ is on sys.path (import config)
+except ImportError:
+    from backend import paths  # when repo root is on sys.path (import backend.config)
+
+ROOT = paths.REPO_ROOT
+DATA_DIR = paths.data_dir()
 CHROMA_DIR = DATA_DIR / "chroma"
 CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 SYSTEM_PROMPT_FILE = DATA_DIR / "system_prompt.txt"
@@ -37,6 +43,9 @@ DEFAULT_SETTINGS = {
     "PROMPT_CACHE_TTL": 3600,
     "VECTOR_WEIGHT": 0.6,
     "BM25_WEIGHT": 0.4,
+    # Cap fused candidates handed to the reranker (latency: cross-encoder cost is linear
+    # in candidate count). Quality-affecting — validate recall@5 before lowering further.
+    "RRF_TOP_N": 12,
     "RERANK_ENABLED": True  ,
     "RERANK_MODEL": "BAAI/bge-reranker-base",
     "RERANK_TOP_K": 8,
@@ -45,7 +54,14 @@ DEFAULT_SETTINGS = {
     "CACHE_SIMILARITY_THRESHOLD": 0.85,
     "RATE_LIMIT_PER_MINUTE": 60,
     # Keeps models resident in Ollama between requests instead of reloading them.
-    "OLLAMA_KEEP_ALIVE": "10m"
+    "OLLAMA_KEEP_ALIVE": "10m",
+    # Redis embedding cache TTL (seconds). Default 7 days.
+    "EMBED_CACHE_TTL": 604800,
+    # GraphRAG-lite. Off by default until the graph eval gate (Task 3.6) passes.
+    "GRAPH_ENABLED": False,
+    "GRAPH_MAX_HOPS": 2,
+    # auto|vector|factoid|relational|global — pin the router or let it decide.
+    "ROUTER_MODE": "auto"
 }
 
 def load_settings() -> dict:

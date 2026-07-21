@@ -42,3 +42,22 @@ Cited Chunk:
 
 Reply exactly with either "Yes" or "No". Do not write any other explanation or text.
 """
+
+
+# GraphRAG-lite entity/relation extraction (Ollama format="json").
+GRAPH_EXTRACT_TEMPLATE = """You extract a knowledge graph from a text chunk. Return ONLY JSON.
+
+Rules:
+- Entities must appear verbatim or near-verbatim in the chunk.
+- At most 10 entities and 10 relations.
+- Entity type is one of: person, org, location, concept, event, other.
+- Each relation's predicate is a verb phrase of at most 5 words.
+- source and target of every relation must be names present in your entities list.
+
+Return exactly this shape:
+{{"entities":[{{"name":"...","type":"person|org|location|concept|event|other"}}],
+ "relations":[{{"source":"...","target":"...","predicate":"<verb phrase>"}}]}}
+
+Chunk:
+{chunk}
+"""
