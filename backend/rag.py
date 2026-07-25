@@ -31,10 +31,23 @@ _collection = _client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"},
 )
 
-def smart_chunk_page(page_content: str) -> list[str]:
-    # ponytail: calls semantic_chunk_text to split page content semantically
-    from backend.ingestion.chunker import semantic_chunk_text
-    return semantic_chunk_text(page_content, config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+def _doc_type_for(source_name: str) -> str:
+    """Map a source name to a chunker doc type; unknown extensions chunk as plain text."""
+    from pathlib import Path
+    from backend.ingestion.chunker import EXTENSION_MAP
+    return EXTENSION_MAP.get(Path(source_name).suffix.lower(), "plain")
+
+
+def smart_chunk_page(page_content: str, doc_type: str = "plain") -> list[str]:
+    """Split one page structure-aware: headings first (markdown/html), then semantically.
+
+    Task 2.1 — this used to call `semantic_chunk_text` directly, so `StructureAwareChunker`
+    was only ever reachable from the batch `reingest.py` script and headings were ignored
+    on every API ingest.
+    """
+    from backend.ingestion.chunker import StructureAwareChunker
+    chunker = StructureAwareChunker(config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+    return chunker.split_text(page_content, doc_type)
 
 
 def chunk_text(text: str) -> list[str]:
@@ -71,13 +84,14 @@ def split_into_pages(text: str) -> list[str]:
 
 def chunk_text_with_metadata(text: str, source_name: str) -> list[dict[str, Any]]:
     raw_pages = split_into_pages(text)
+    doc_type = _doc_type_for(source_name)
     chunks_meta = []
     current_topic = "General Overview"
-    
+
     for page_idx, page_content in enumerate(raw_pages):
         page_num = page_idx + 1
-        page_chunks = smart_chunk_page(page_content)
-        
+        page_chunks = smart_chunk_page(page_content, doc_type)
+
         for chunk in page_chunks:
             chunk = chunk.strip()
             if not chunk:
@@ -104,22 +118,36 @@ def chunk_text_with_metadata(text: str, source_name: str) -> list[dict[str, Any]
                 "page_number": page_num,
                 "topic": topic_to_use
             })
-            
+
+    # Offsets into the *full* document text, so the UI can highlight a cited span inside
+    # the stored original. One forward pass across every chunk in order.
+    from backend.ingestion.chunker import locate_chunks
+    spans = locate_chunks(text, [c["text"] for c in chunks_meta])
+    for chunk_meta, (start, end) in zip(chunks_meta, spans):
+        chunk_meta["char_start"] = start
+        chunk_meta["char_end"] = end
+
     return chunks_meta
 
 
-def add_source(name: str, text: str) -> dict[str, Any]:
+def add_source(name: str, text: str, force: bool = False) -> dict[str, Any]:
+    """Ingest a source. Unchanged text is skipped unless ``force`` (used by reingest, where
+    the text is identical but the chunker settings have changed)."""
     start_time = time.time()
-    
+
     import hashlib
     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    
+    source_id = None
+
     # Check if a source with this name already exists in Chroma
     existing = _collection.get(where={"source_name": name}, include=["metadatas"])
     if existing and existing.get("ids"):
         # Check if the text hash matches
         first_meta = existing["metadatas"][0]
-        if first_meta.get("doc_hash") == text_hash:
+        # Replacing a source's chunks keeps its id, so citations and graph rows that
+        # reference it stay pointed at the same source.
+        source_id = first_meta.get("source_id")
+        if not force and first_meta.get("doc_hash") == text_hash:
             logging.getLogger(__name__).info(
                 f"Source '{name}' has not changed (hash matches). Skipping ingestion."
             )
@@ -162,7 +190,7 @@ def add_source(name: str, text: str) -> dict[str, Any]:
     embed_fn = OllamaEmbed()
     embeddings = embed_fn(annotated_chunks)
 
-    source_id = str(uuid.uuid4())
+    source_id = source_id or str(uuid.uuid4())
     ids = [f"{source_id}:{i}" for i in range(len(chunks_meta))]
     metadatas = [
         {
@@ -170,7 +198,11 @@ def add_source(name: str, text: str) -> dict[str, Any]:
             "source_name": name,
             "chunk_index": i,
             "page_number": c["page_number"],
+            # `topic` doubles as the plan's `section_title` — it is derived from the chunk's
+            # heading line, so a second key would just hold the same string.
             "topic": c["topic"],
+            "char_start": c["char_start"],
+            "char_end": c["char_end"],
             "context_blurb": blurbs[i],
             "doc_hash": text_hash
         }
@@ -179,6 +211,13 @@ def add_source(name: str, text: str) -> dict[str, Any]:
 
     # Store the original chunks in the collection but with the annotated embeddings
     _collection.add(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
+
+    # Keep the full source text: char_start/char_end above are offsets into it.
+    try:
+        from backend.document_store import save_document
+        save_document(source_id, name, text)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Could not store full text for '{name}': {e}")
 
     # Rebuild BM25 index after adding/updating documents
     try:
@@ -250,6 +289,12 @@ def delete_source(source_id: str) -> bool:
     except Exception:
         pass
 
+    try:
+        from backend.document_store import delete_document
+        delete_document(source_id)
+    except Exception:
+        pass
+
     # Drop this doc's graph entities/relations (orphan cleanup) when the graph is in use.
     if getattr(config, "GRAPH_ENABLED", False):
         try:
@@ -259,6 +304,42 @@ def delete_source(source_id: str) -> bool:
             pass
 
     return True
+
+
+def get_document_text(source_id: str) -> str | None:
+    """Full original text for a source: the stored copy, else its chunks re-joined.
+
+    Anything ingested before the document store existed has no stored copy. Re-joining its
+    chunks is lossy at the seams (whitespace between chunks is not recoverable) but is
+    faithful enough to re-chunk from.
+    """
+    try:
+        from backend.document_store import get_document
+        doc = get_document(source_id)
+        if doc and doc.get("text"):
+            return doc["text"]
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Document store unavailable: {e}")
+
+    src = get_source(source_id)
+    if not src or not src["chunks"]:
+        return None
+    return "\n\n".join(c["text"] for c in src["chunks"])
+
+
+def reingest_source(source_id: str) -> dict[str, Any]:
+    """Re-chunk and re-embed one source using the current chunker settings.
+
+    Deliberately synchronous and one source at a time: it re-runs the contextualizer LLM
+    over every chunk, which is the heaviest thing this app does.
+    """
+    src = get_source(source_id)
+    if not src:
+        raise ValueError(f"Unknown source: {source_id}")
+    text = get_document_text(source_id)
+    if not text:
+        raise ValueError(f"No text available to reingest source: {source_id}")
+    return add_source(src["name"], text, force=True)
 
 
 def get_system_prompt() -> str:

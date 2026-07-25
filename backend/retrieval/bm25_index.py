@@ -44,11 +44,24 @@ def build_bm25_index() -> None:
     with open(INDEX_PATH, "wb") as f:
         pickle.dump({"bm25": bm25, "ids": ids, "docs": docs, "metas": metas}, f)
 
+# Unpickling the whole corpus index took a disk read + deserialize on *every* search, and
+# a rewritten query runs four of them. Keyed on mtime so an out-of-process rebuild (the
+# eval harness, reingest) is still picked up, at the cost of one stat() per search.
+# ponytail: benign race — concurrent misses just load the same file twice.
+_CACHE: tuple[float, dict] | None = None
+
+
 def _load_index() -> dict | None:
+    global _CACHE
     if not INDEX_PATH.is_file():
         return None
+    mtime = INDEX_PATH.stat().st_mtime
+    if _CACHE is not None and _CACHE[0] == mtime:
+        return _CACHE[1]
     with open(INDEX_PATH, "rb") as f:
-        return pickle.load(f)
+        index = pickle.load(f)
+    _CACHE = (mtime, index)
+    return index
 
 def search_bm25(query: str, top_k: int = 20, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
     """Return top_k (ids, docs, metas) for the given query using BM25.

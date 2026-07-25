@@ -16,6 +16,8 @@ redis==8.0.1
 
 # --- Retrieval ---
 rank-bm25==0.2.2
+# Default reranker (RERANKER=flashrank); sentence-transformers serves RERANKER=cross-encoder
+flashrank==0.2.10
 sentence-transformers==5.6.0
 langchain-text-splitters==1.1.2
 numpy==2.5.1

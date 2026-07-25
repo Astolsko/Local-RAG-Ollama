@@ -27,8 +27,15 @@ venv/
 ENV/
 env/
 .cache/
+
+# Working notes / planning docs
 rag_production_upgrade_plan.md
-rag_backend_architecture.md
+
+files/
+docs/
+journal.md
+journal2.md 
+
 
 # Node/React dependencies and builds
 node_modules/

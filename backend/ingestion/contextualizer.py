@@ -1,9 +1,52 @@
 import hashlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 from backend import config
 
 logger = logging.getLogger(__name__)
+
+# Blurbs are one LLM call per chunk, so a long document serialises hundreds of them.
+# Ollama queues past its own parallelism limit, but overlapping the request round-trips
+# still removes the dead time between calls.
+BLURB_WORKERS = 4
+
+
+def _blurb_prompt(doc_text: str, chunk_text: str) -> str:
+    # ponytail: the whole document goes into every chunk's prompt, so prompt tokens grow
+    # as O(doc_size * chunk_count) at ingestion. Passing the enclosing section (or a
+    # cached one-shot document summary) instead would make it linear — but it changes
+    # blurb text, hence the embeddings, so it needs a re-ingest and an eval.
+    return (
+        "Here is a document section and a chunk from it. Write one sentence situating this chunk within the document.\n\n"
+        f"Document Section:\n{doc_text}\n\n"
+        f"Chunk:\n{chunk_text}"
+    )
+
+
+def _generate_blurb(client: httpx.Client, doc_text: str, chunk_text: str) -> str:
+    """One Ollama call for one chunk's blurb. Returns "" on any failure."""
+    try:
+        r = client.post(
+            f"{config.OLLAMA_BASE}/api/generate",
+            json={
+                "model": config.LLM_MODEL,
+                "prompt": _blurb_prompt(doc_text, chunk_text),
+                "stream": False,
+                "options": {"temperature": 0.0},
+                "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m"),
+            },
+        )
+        r.raise_for_status()
+        blurb = r.json().get("response", "").strip()
+        if blurb.startswith('"') and blurb.endswith('"'):
+            blurb = blurb[1:-1].strip()
+        return blurb
+    except Exception as e:
+        logger.error(f"Failed to generate context blurb via Ollama: {e}")
+        return ""
+
 
 class Contextualizer:
     def __init__(self):
@@ -39,44 +82,19 @@ class Contextualizer:
             if h in self.fallback_cache:
                 return self.fallback_cache[h]
             
-        prompt = (
-            "Here is a document section and a chunk from it. Write one sentence situating this chunk within the document.\n\n"
-            f"Document Section:\n{doc_text}\n\n"
-            f"Chunk:\n{chunk_text}"
-        )
-        
-        try:
-            with httpx.Client(timeout=60) as client:
-                r_post = client.post(
-                    f"{config.OLLAMA_BASE}/api/generate",
-                    json={
-                        "model": config.LLM_MODEL,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.0
-                        },
-                        "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")
-                    }
-                )
-                r_post.raise_for_status()
-                blurb = r_post.json().get("response", "").strip()
-                if blurb.startswith('"') and blurb.endswith('"'):
-                    blurb = blurb[1:-1].strip()
-                
-                # Update cache
-                if r:
-                    try:
-                        r.set(redis_key, blurb)
-                    except Exception as e:
-                        logger.warning(f"Failed to write to Redis cache: {e}")
-                else:
-                    self.fallback_cache[h] = blurb
-                    
-                return blurb
-        except Exception as e:
-            logger.error(f"Failed to generate context blurb via Ollama: {e}")
+        with httpx.Client(timeout=60) as client:
+            blurb = _generate_blurb(client, doc_text, chunk_text)
+        if not blurb:
             return ""
+
+        if r:
+            try:
+                r.set(redis_key, blurb)
+            except Exception as e:
+                logger.warning(f"Failed to write to Redis cache: {e}")
+        else:
+            self.fallback_cache[h] = blurb
+        return blurb
 
     def get_blurbs_batch(self, doc_text: str, chunk_texts: list[str]) -> list[str]:
         """Fetch blurbs for a batch of chunks, calling Ollama only for cache misses."""
@@ -113,41 +131,25 @@ class Contextualizer:
                 needed_indices.append(idx)
                 
         if needed_generations:
-            for (h, rk, chunk), idx in zip(needed_generations, needed_indices):
-                prompt = (
-                    "Here is a document section and a chunk from it. Write one sentence situating this chunk within the document.\n\n"
-                    f"Document Section:\n{doc_text}\n\n"
-                    f"Chunk:\n{chunk}"
-                )
-                try:
-                    with httpx.Client(timeout=60) as client:
-                        r_post = client.post(
-                            f"{config.OLLAMA_BASE}/api/generate",
-                            json={
-                                "model": config.LLM_MODEL,
-                                "prompt": prompt,
-                                "stream": False,
-                                "options": {
-                                    "temperature": 0.0
-                                },
-                                "keep_alive": getattr(config, "OLLAMA_KEEP_ALIVE", "10m")
-                            }
-                        )
-                        r_post.raise_for_status()
-                        blurb = r_post.json().get("response", "").strip()
-                        if blurb.startswith('"') and blurb.endswith('"'):
-                            blurb = blurb[1:-1].strip()
-                        
-                        blurbs[idx] = blurb
-                        if r:
-                            try:
-                                r.set(rk, blurb)
-                            except Exception as e:
-                                logger.warning(f"Failed to write to Redis cache: {e}")
-                        else:
-                            self.fallback_cache[h] = blurb
-                except Exception as e:
-                    logger.error(f"Failed to generate context blurb for chunk {idx}: {e}")
-                    blurbs[idx] = ""
-            
+            # One shared client, requests overlapped: this loop used to open a fresh
+            # connection per chunk and wait for each generation before starting the next.
+            with httpx.Client(timeout=60) as client:
+                with ThreadPoolExecutor(max_workers=BLURB_WORKERS) as pool:
+                    generated = list(pool.map(
+                        lambda g: _generate_blurb(client, doc_text, g[2]),
+                        needed_generations,
+                    ))
+
+            for (h, rk, _chunk), idx, blurb in zip(needed_generations, needed_indices, generated):
+                blurbs[idx] = blurb
+                if not blurb:
+                    continue
+                if r:
+                    try:
+                        r.set(rk, blurb)
+                    except Exception as e:
+                        logger.warning(f"Failed to write to Redis cache: {e}")
+                else:
+                    self.fallback_cache[h] = blurb
+
         return blurbs

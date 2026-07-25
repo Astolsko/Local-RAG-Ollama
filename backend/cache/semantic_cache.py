@@ -1,21 +1,23 @@
 import json
-import math
 import hashlib
 import logging
+import numpy as np
 import config
 from redis_store import get_redis
 
 logger = logging.getLogger(__name__)
 
 def cosine_similarity(v1: list[float], v2: list[float]) -> float:
+    """Cosine similarity. numpy, not a Python loop — this runs once per cached entry on
+    every request, and the embeddings are 768-dimensional."""
     if len(v1) != len(v2) or not v1:
         return 0.0
-    dot_prod = sum(a * b for a, b in zip(v1, v2))
-    norm_a = math.sqrt(sum(a * a for a in v1))
-    norm_b = math.sqrt(sum(b * b for b in v2))
-    if norm_a == 0.0 or norm_b == 0.0:
+    a = np.asarray(v1, dtype=np.float64)
+    b = np.asarray(v2, dtype=np.float64)
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denom == 0.0:
         return 0.0
-    return dot_prod / (norm_a * norm_b)
+    return float(np.dot(a, b) / denom)
 
 def check_semantic_cache(query: str, query_embedding: list[float]) -> dict | None:
     """Check Redis for a semantically similar query and return cached response if match is above threshold."""
@@ -35,6 +37,10 @@ def check_semantic_cache(query: str, query_embedding: list[float]) -> dict | Non
             current_version = "0"
         
         # Get all cache keys
+        # ponytail: linear scan — every entry is fetched and JSON-parsed (the 768-float
+        # embedding included) to find one match. Fine at tens of cached queries, which is
+        # what a 24h TTL yields. If this shows up in profiles, store embeddings in a
+        # separate packed key and only load the winner's payload.
         keys_set = redis_client.smembers("semantic:cache:keys")
         if not keys_set:
             return None

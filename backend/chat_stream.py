@@ -6,7 +6,7 @@ import logging
 import asyncio
 import httpx
 import config
-from backend.prompt_templates import SYSTEM_PROMPT_TEMPLATE, LLM_FAITHFULNESS_JUDGE_TEMPLATE
+from backend.prompt_templates import LLM_FAITHFULNESS_JUDGE_TEMPLATE
 from backend.retrieval.hybrid_search import hybrid_search_sync
 from redis_store import get_session_messages, append_session_turn
 
@@ -37,9 +37,8 @@ def calculate_confidence(cited_chunks: list[dict]) -> float:
         # Check for rerank score (higher is better)
         rerank_score = chunk.get("rerank_score")
         if rerank_score is not None:
-            # Convert cross-encoder logit score to probability via sigmoid
-            prob = 1 / (1 + math.exp(-rerank_score))
-            scores.append(prob)
+            # Already normalized to 0..1 by reranker.rerank(), whichever backend ran.
+            scores.append(max(0.0, min(1.0, float(rerank_score))))
         else:
             # Fallback to vector distance (Chroma cosine distance: 0.0 is exact match, 2.0 is opposite)
             dist = chunk.get("distance")
@@ -146,7 +145,7 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
         
     try:
         # Check if we should use RAG
-        from backend.rag import _collection
+        from backend.rag import _collection, _ensure_system_prompt_cached
         is_rag = source_ids is not None and len(source_ids) > 0 and _collection.count() > 0 and not is_conversational_greeting(question)
 
         # Load session history once, up front: it decides whether the query needs
@@ -262,7 +261,11 @@ async def chat_stream(question: str, session_id: str | None = None, source_ids: 
                 })
                 
             context = "\n\n".join(context_parts)
-            system_prompt = SYSTEM_PROMPT_TEMPLATE
+            # The prompt the user edits (PUT /api/settings/system-prompt -> system_prompt.txt,
+            # falling back to config.DEFAULT_SYSTEM_PROMPT). This path used to hardcode
+            # prompt_templates.SYSTEM_PROMPT_TEMPLATE, so the settings editor changed nothing
+            # for the main chat — there were two competing prompts and this one won.
+            system_prompt = await loop.run_in_executor(None, _ensure_system_prompt_cached)
             
             # Yield initial citations (UI expectation)
             yield json.dumps({"citations": initial_citations, "cached": False, "request_id": request_id}) + "\n"

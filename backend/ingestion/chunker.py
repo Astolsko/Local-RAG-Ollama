@@ -134,6 +134,53 @@ def semantic_chunk_text(text: str, chunk_size: int = 500, chunk_overlap: int = 5
             
     return final_chunks
 
+def _normalize_with_map(text: str) -> tuple[str, List[int]]:
+    """Collapse whitespace runs to a single space, keeping a map back to original indices."""
+    out: List[str] = []
+    idx_map: List[int] = []
+    prev_space = False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not prev_space and out:
+                out.append(" ")
+                idx_map.append(i)
+            prev_space = True
+        else:
+            out.append(ch)
+            idx_map.append(i)
+            prev_space = False
+    return "".join(out), idx_map
+
+
+def locate_chunks(text: str, chunks: List[str]) -> List[tuple[int, int]]:
+    """Return each chunk's ``(char_start, char_end)`` span within ``text``.
+
+    Chunking re-joins sentences with single spaces, so a chunk is rarely a literal
+    substring of the source. Matching therefore happens in whitespace-collapsed space and
+    the offsets are mapped back to real indices. The cursor only moves forward, so a
+    passage repeated verbatim resolves to the occurrence matching the chunk's order.
+    Unlocatable chunks get ``(-1, -1)`` — callers treat that as "no highlight available".
+    """
+    norm, idx_map = _normalize_with_map(text)
+    spans: List[tuple[int, int]] = []
+    cursor = 0
+    for chunk in chunks:
+        needle = _normalize_with_map(chunk)[0].strip()
+        if not needle:
+            spans.append((-1, -1))
+            continue
+        pos = norm.find(needle, cursor)
+        if pos == -1:
+            pos = norm.find(needle)  # chunker reordered something; fall back to a global search
+        if pos == -1:
+            spans.append((-1, -1))
+            continue
+        end = pos + len(needle)
+        spans.append((idx_map[pos], idx_map[end - 1] + 1))
+        cursor = end
+    return spans
+
+
 class StructureAwareChunker:
     def __init__(self, chunk_size: int = 500, chunk_overlap: int = 50):
         self.chunk_size = chunk_size
@@ -176,16 +223,19 @@ class StructureAwareChunker:
         """Semantic splitting for plain/text/pdf content."""
         return semantic_chunk_text(text, self.chunk_size, self.chunk_overlap)
 
+    def split_text(self, text: str, doc_type: str = "plain") -> List[str]:
+        """Structure-aware split of raw text: headings first for markdown/html, then size."""
+        if doc_type in ("markdown", "html"):
+            return self._split_markdown_html(text)
+        return self._split_plain(text)
+
     def split_file(self, path: Path) -> List[Chunk]:
         """Read the file, detect its type, split into chunks, and attach metadata.
         Returns a list of Chunk dictionaries ready for ingestion.
         """
         doc_type = self._validate_extension(path)
         content = path.read_text(encoding="utf-8")
-        if doc_type in ("markdown", "html"):
-            raw_chunks = self._split_markdown_html(content)
-        else:
-            raw_chunks = self._split_plain(content)
+        raw_chunks = self.split_text(content, doc_type)
 
         document_id = str(uuid.uuid5(uuid.NAMESPACE_URL, str(path.resolve())))
         created_at = datetime.utcnow().isoformat() + "Z"

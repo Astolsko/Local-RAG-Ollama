@@ -47,8 +47,16 @@ DEFAULT_SETTINGS = {
     # in candidate count). Quality-affecting — validate recall@5 before lowering further.
     "RRF_TOP_N": 12,
     "RERANK_ENABLED": True  ,
+    # flashrank|cross-encoder|off. FlashRank is a small ONNX cross-encoder and is much
+    # cheaper on CPU; RERANK_MODEL still names the sentence-transformers model used when
+    # RERANKER=cross-encoder. Both backends report a normalized 0..1 score.
+    "RERANKER": "flashrank",
+    "FLASHRANK_MODEL": "ms-marco-MiniLM-L-12-v2",
     "RERANK_MODEL": "BAAI/bge-reranker-base",
     "RERANK_TOP_K": 8,
+    # Skip reranking entirely when the best dense hit is already this similar
+    # (Chroma cosine similarity = 1 - distance). 1.0 disables the shortcut.
+    "RERANK_SKIP_THRESHOLD": 0.85,
     "ENABLE_QUERY_REWRITE": True,
     "QUERY_REWRITE_TIMEOUT_MS": 2000,
     "CACHE_SIMILARITY_THRESHOLD": 0.85,

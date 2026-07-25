@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 
 import config
 from chat_history import delete_chat, get_chat, list_chats, save_chat
-from backend.rag import add_source, ask, get_source, delete_source, get_system_prompt, list_sources, set_system_prompt
+from backend.rag import (add_source, ask, get_source, delete_source, get_system_prompt,
+                         list_sources, reingest_source, set_system_prompt)
 from redis_store import clear_session, get_session_messages, ping as redis_ping, require_redis
 
 config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -52,6 +53,12 @@ def _redis_or_503():
 class SourceIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1)
+
+
+class ReingestIn(BaseModel):
+    # Empty means every source. Pass a single id to re-chunk one document at a time —
+    # reingesting runs the contextualizer LLM over every chunk.
+    source_ids: list[str] | None = None
 
 
 class AskIn(BaseModel):
@@ -298,6 +305,35 @@ async def upload_source(
         return result
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/sources/reingest")
+def reingest_sources(body: ReingestIn):
+    """Re-chunk existing sources with the current chunker settings (Task 2.1).
+
+    Synchronous on purpose: this re-runs blurb generation and embedding over every chunk,
+    so the caller should see it finish — and should reingest one source at a time on
+    modest hardware. A failing source is reported, not fatal to the rest.
+    """
+    ids = body.source_ids or [s["id"] for s in list_sources()]
+    reingested, errors = [], []
+    for sid in ids:
+        try:
+            reingested.append(reingest_source(sid))
+        except Exception as e:
+            errors.append({"id": sid, "error": str(e)})
+    return {"reingested": reingested, "errors": errors}
+
+
+@app.get("/api/documents/{doc_id}")
+def get_document_full_text(doc_id: str):
+    """Full original text of a source, for highlighting a chunk's char_start/char_end."""
+    from backend.rag import get_document_text
+    text = get_document_text(doc_id)
+    if text is None:
+        raise HTTPException(404, "Document not found")
+    source = get_source(doc_id)
+    return {"id": doc_id, "name": source["name"] if source else doc_id, "text": text}
 
 
 @app.delete("/api/sources/{source_id}")

@@ -1,11 +1,8 @@
-SYSTEM_PROMPT_TEMPLATE = (
-    "You are a helpful study and Q&A assistant. You answer the user's question using the provided context chunks first, citing the chunk IDs inline (e.g. [1], [2]) when referencing facts from them.\n\n"
-    "Rules:\n"
-    "- Each retrieved chunk in the context is prefixed with its ID, like [Chunk 1], [Chunk 2], etc. Use these IDs for citations.\n"
-    "- If the context contains the answer, base your response primarily on the context and cite it.\n"
-    "- If the context does not contain the answer, you are encouraged to use your general knowledge to answer, connect topics, or provide prerequisite study knowledge. However, you must explicitly mention that the information is from general knowledge or outside the provided documents.\n"
-    "- Keep answers concise, accurate, and educational."
-)
+# NOTE: the chat system prompt does NOT live here. There is exactly one source of truth:
+# `config.DEFAULT_SYSTEM_PROMPT`, overridden by `data/system_prompt.txt` when the user edits
+# it, resolved through `rag.get_system_prompt()`. A near-identical `SYSTEM_PROMPT_TEMPLATE`
+# used to sit here and was what `chat_stream` actually sent, which is why editing the prompt
+# in the UI had no effect on the main chat. Do not reintroduce it.
 
 # Template for background faithfulness judge (observability)
 LLM_FAITHFULNESS_JUDGE_TEMPLATE = """You are an expert AI evaluator checking for hallucinations. Rate the generated answer against the retrieved context on a scale of 1 to 5 (integer only) for Faithfulness (no hallucination vs retrieved context).

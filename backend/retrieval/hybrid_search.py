@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import time
 from typing import List, Tuple, Any
 
 import config
@@ -21,27 +22,45 @@ def _source_filter(source_ids: list[str] | None) -> dict | None:
         return {"source_id": source_ids[0]}
     return {"source_id": {"$in": source_ids}}
 
-def _vector_search(question: str, top_k: int, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
-    """Perform Chroma vector search returning (ids, docs, metas). Blocking (Chroma is sync)."""
+def _vector_search(embedding: List[float], top_k: int, source_ids: list[str] | None = None) -> Tuple[List[str], List[str], List[Any]]:
+    """Chroma vector search on a *precomputed* query embedding, returning (ids, docs, metas).
+
+    Takes the embedding rather than the text: passing `query_texts` makes Chroma call the
+    collection's embedding function itself, i.e. one Ollama round-trip per rewritten query
+    on top of the one the caller already paid. Blocking (Chroma is sync).
+    """
     # Lazy import to avoid circular dependency
     from backend import rag as rag_mod
     _collection = rag_mod._collection
     hits = _collection.query(
-        query_texts=[question],
+        query_embeddings=[embedding],
         n_results=min(top_k, _collection.count()),
         where=_source_filter(source_ids),
-        include=["documents", "metadatas"],
+        include=["documents", "metadatas", "distances"],
     )
     ids = hits["ids"][0] if hits["ids"] else []
     docs = hits["documents"][0] if hits["documents"] else []
     metas = hits["metadatas"][0] if hits["metadatas"] else []
-    return ids, docs, metas
+    # Distances drive the rerank-skip shortcut and the confidence fallback when no
+    # reranker ran. Older mocks/collections may omit them.
+    raw_dists = hits.get("distances") or []
+    dists = raw_dists[0] if raw_dists else [None] * len(ids)
+    return ids, docs, metas, dists
 
 
-async def _search_all(fn, queries, top_k, source_ids):
-    """Run a blocking search `fn(q, top_k, source_ids)` across queries concurrently."""
-    import asyncio as _a
-    return await _a.gather(*[_a.to_thread(fn, q, top_k, source_ids) for q in queries])
+async def _timed_fan_out(fn, items, top_k, source_ids):
+    """Run blocking `fn(item, top_k, source_ids)` across items concurrently; time the batch."""
+    t = time.perf_counter()
+    out = await asyncio.gather(*[asyncio.to_thread(fn, it, top_k, source_ids) for it in items])
+    return out, time.perf_counter() - t
+
+
+async def _search_both(embeddings, queries, top_k, source_ids):
+    """Dense and sparse retrieval, concurrently, each fanned out across the queries."""
+    return await asyncio.gather(
+        _timed_fan_out(_vector_search, embeddings, top_k, source_ids),
+        _timed_fan_out(search_bm25, queries, top_k, source_ids),
+    )
 
 def _rrf_fusion(vector: List[Tuple[str, Any]], bm25: List[Tuple[str, Any]]) -> List[Tuple[str, Any]]:
     """Combine rankings using Reciprocal Rank Fusion.
@@ -71,7 +90,6 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
     When ``source_ids`` is given, both the dense and sparse paths are restricted to those sources.
     ``has_history`` marks a follow-up turn, which always needs query rewriting.
     """
-    import time
     if top_k is None:
         top_k = config.TOP_K
 
@@ -86,28 +104,30 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
 
     all_vector_payload: List[Tuple[str, Any]] = []
     all_bm25_payload: List[Tuple[str, Any]] = []
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
+
     t_start_retrieve = time.perf_counter()
-    # Fan out each backend across all (rewritten) queries concurrently instead of the old
-    # serial loop — up to 4 queries × 2 backends were run one at a time. Results are
-    # collected in query order, so the fused ranking is identical to the serial version.
-    t_v_start = time.perf_counter()
-    vector_results = loop.run_until_complete(_search_all(_vector_search, queries, top_k * 2, source_ids))
-    vector_latency_total = time.perf_counter() - t_v_start
+    # Embed every query in one batched /api/embed call. Chroma would otherwise embed each
+    # query separately inside its own search thread, so an expanded query cost 4 Ollama
+    # round-trips contending on one model instead of a single batch.
+    from backend.embeddings import embed_texts
+    q_embeddings = embed_texts(queries)
 
-    t_b_start = time.perf_counter()
-    bm25_results = loop.run_until_complete(_search_all(search_bm25, queries, top_k * 2, source_ids))
-    bm25_latency_total = time.perf_counter() - t_b_start
+    # Both backends run concurrently, each fanned out across the (rewritten) queries.
+    # Results come back in query order, so the fused ranking is identical to the serial
+    # version. asyncio.run (not get_event_loop) because this runs in a worker thread with
+    # no loop of its own — the old path built a fresh loop per request and never closed it.
+    (vector_results, vector_latency_total), (bm25_results, bm25_latency_total) = asyncio.run(
+        _search_both(q_embeddings, queries, top_k * 2, source_ids)
+    )
 
-    for v_ids, v_docs, v_metas in vector_results:
-        all_vector_payload.extend(
-            [(doc_id, {"doc": doc, "meta": meta}) for doc_id, doc, meta in zip(v_ids, v_docs, v_metas)]
-        )
+    best_dense_sim = 0.0
+    for v_ids, v_docs, v_metas, v_dists in vector_results:
+        for doc_id, doc, meta, dist in zip(v_ids, v_docs, v_metas, v_dists):
+            if dist is not None and isinstance(meta, dict):
+                # Chroma cosine distance: 0 is identical, 2 is opposite.
+                meta["distance"] = dist
+                best_dense_sim = max(best_dense_sim, 1.0 - float(dist))
+            all_vector_payload.append((doc_id, {"doc": doc, "meta": meta}))
     for b_ids, b_docs, b_metas in bm25_results:
         all_bm25_payload.extend(
             [(doc_id, {"doc": doc, "meta": meta}) for doc_id, doc, meta in zip(b_ids, b_docs, b_metas)]
@@ -127,15 +147,27 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
 
     retrieve_latency = time.perf_counter() - t_start_retrieve
 
-    # Optional reranking (still based on the original question)
+    # Optional reranking (still based on the original question).
+    # Confidence shortcut (Task 2.3): when the best dense hit is already this similar, the
+    # reranker has nothing left to reorder, so skip it and keep the fusion order.
     rerank_latency = 0.0
-    if getattr(config, "RERANK_ENABLED", False):
-        # Cap candidates before reranking — cross-encoder cost is linear in candidate count,
-        # and RRF has already surfaced the best few. See Task 2.2.
+    skip_threshold = getattr(config, "RERANK_SKIP_THRESHOLD", 0.85)
+    rerank_skipped_confident = best_dense_sim >= skip_threshold
+    if getattr(config, "RERANK_ENABLED", False) and not rerank_skipped_confident:
+        # Cap candidates before reranking — rerank cost is linear in candidate count, and
+        # RRF has already surfaced the best few. See Task 2.2.
         fused = fused[:getattr(config, "RRF_TOP_N", 12)]
         t_start_rerank = time.perf_counter()
         fused = rerank(question, fused)
         rerank_latency = time.perf_counter() - t_start_rerank
+        fused = fused[:config.RERANK_TOP_K]
+        # rerank() records the score on the payload, but every caller builds its citations
+        # out of `metas` and reads confidence from there — so it was always missing and
+        # calculate_confidence fell through to its flat 0.85 default. Mirror it onto meta.
+        for _, p in fused:
+            p["meta"]["rerank_score"] = p.get("rerank_score")
+    elif rerank_skipped_confident:
+        logger.info(f"rerank skipped: top dense similarity {best_dense_sim:.3f} >= {skip_threshold}")
         fused = fused[:config.RERANK_TOP_K]
     else:
         fused = fused[:top_k]
@@ -157,7 +189,9 @@ def hybrid_search_sync(question: str, top_k: int = None, source_ids: list[str] |
         "vector_latency": vector_latency_total,
         "bm25_latency": bm25_latency_total,
         "rrf_latency": rrf_latency,
-        "route": route
+        "route": route,
+        "rerank_skipped": rerank_skipped_confident,
+        "best_dense_sim": best_dense_sim,
     }
 
     return docs, metas, ids, metrics_info
