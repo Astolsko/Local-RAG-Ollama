@@ -294,14 +294,3 @@ The backend exposes the following endpoints (documented interactively at `/docs`
 | **POST** | `/api/sources/upload` | Upload `.txt` or `.pdf` file to ingest into ChromaDB. |
 | **DELETE** | `/api/sources/{id}` | Remove a document source and its embeddings from the DB. |
 
----
-
-## Project Phases & Roadmap
-
-| Phase | Status | Scope |
-|-------|--------|-------|
-| **Phase 1** | Completed | Document upload/paste, text chunking, vector embedding, basic RAG, and query answering. |
-| **Phase 2** | Completed | PDF/Markdown parsing, smart chunking, context preservation, and streaming LLM answers. |
-| **Phase 3** | Completed | Custom system prompt editing, Redis session memory, prompt semantic caching, and chat log persistence. |
-| **Phase 4** | Planned | Highlighting matched document chunks in the UI and source document text preview. |
-| **Phase 5** | Planned | Configuration panel in UI for dynamic chunk size, LLM model choice, and custom parameters. |
